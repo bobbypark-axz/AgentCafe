@@ -426,6 +426,7 @@ export function runSandboxPostAgent(
           LENGTH: params.length ?? "medium",
           TONE: params.tone ?? "",
           MODEL_ID: params.modelId ?? "anthropic/claude-sonnet-4.6",
+          ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? "",
           VERCEL_OIDC_TOKEN: process.env.VERCEL_OIDC_TOKEN ?? "",
         },
         stdout: makeLineSink("agent"),

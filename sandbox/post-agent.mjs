@@ -17,6 +17,7 @@ import process from "node:process";
 import { ToolLoopAgent, stepCountIs } from "ai";
 import { createMCPClient } from "@ai-sdk/mcp";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { anthropic } from "@ai-sdk/anthropic";
 
 function emit(kind, payload) {
   process.stdout.write(
@@ -36,6 +37,15 @@ async function main() {
 
   if (!SESSION_BLOB_URL) throw new Error("SESSION_BLOB_URL is required");
   if (!CAFE_URL) throw new Error("CAFE_URL is required");
+
+  // Resolve model: direct Anthropic provider if API key available, otherwise AI Gateway
+  function resolveModel(id) {
+    if (process.env.ANTHROPIC_API_KEY) {
+      const raw = (id ?? "anthropic/claude-sonnet-4.6").replace(/^anthropic\//, "");
+      return anthropic(raw.replace(/\./g, "-"));
+    }
+    return id ?? "anthropic/claude-sonnet-4.6";
+  }
 
   emit("phase", { message: "downloading storageState" });
   const res = await fetch(SESSION_BLOB_URL);
@@ -161,7 +171,7 @@ GUARDRAILS
 `.trim();
 
   const agent = new ToolLoopAgent({
-    model: MODEL_ID,
+    model: resolveModel(MODEL_ID),
     instructions,
     tools,
     stopWhen: stepCountIs(50),

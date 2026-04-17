@@ -4,6 +4,7 @@
   "type": "module",
   "description": "Agent code uploaded into the Vercel Sandbox microVM. Not part of the Next.js bundle.",
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.69",
     "@ai-sdk/gateway": "^3.0.98",
     "@ai-sdk/mcp": "^1.0.36",
     "@modelcontextprotocol/sdk": "^1.29.0",
