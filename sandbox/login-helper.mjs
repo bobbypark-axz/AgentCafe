@@ -1,182 +1,159 @@
 /**
  * Login helper — runs inside Vercel Sandbox.
  *
- * Opens Chromium, navigates to Kakao login, fills credentials,
- * then enters a loop: takes screenshots, watches for user commands
- * (type, click, press) via /tmp/command.json, and waits for a
- * /tmp/done signal to capture storageState.
+ * 1. Opens Chromium, navigates to Kakao login
+ * 2. Fills email/password automatically
+ * 3. Detects 2FA screen → writes "2fa" to /tmp/status
+ * 4. Waits for /tmp/code file (user's 2FA code)
+ * 5. Types the code, completes login
+ * 6. Saves storageState to /tmp/storageState.json
  *
- * Communication is file-based:
- *   /tmp/screenshot.b64   — latest screenshot (base64 PNG)
- *   /tmp/command.json      — next command to execute (deleted after read)
- *   /tmp/done              — signal to save session and exit
- *   /tmp/storageState.json — captured session (written on done)
- *   /tmp/ready             — signals the helper is ready
- *   /tmp/status.json       — current page URL + title
+ * File-based IPC:
+ *   /tmp/status   — "filling" | "2fa" | "done" | "error:message"
+ *   /tmp/code     — 2FA code written by the API when user submits
+ *   /tmp/storageState.json — captured session
+ *   /tmp/ready    — signals the helper is running
  */
 import { chromium } from "playwright";
-import { writeFile, readFile, unlink, access } from "node:fs/promises";
-
-const SCREENSHOT_PATH = "/tmp/screenshot.b64";
-const COMMAND_PATH = "/tmp/command.json";
-const DONE_PATH = "/tmp/done";
-const STATE_PATH = "/tmp/storageState.json";
-const READY_PATH = "/tmp/ready";
-const STATUS_PATH = "/tmp/status.json";
+import { writeFile, readFile, access } from "node:fs/promises";
 
 const DAUM_EMAIL = process.env.DAUM_EMAIL || "";
 const DAUM_PASSWORD = process.env.DAUM_PASSWORD || "";
-const STORAGE_STATE_PATH = process.env.STORAGE_STATE_PATH || "";
 
 async function fileExists(p) {
   try { await access(p); return true; } catch { return false; }
 }
 
+async function setStatus(s) {
+  await writeFile("/tmp/status", s);
+  console.log(`[status] ${s}`);
+}
+
 async function main() {
-  console.log("[login-helper] launching browser");
   const browser = await chromium.launch({
     headless: true,
     args: ["--no-sandbox", "--disable-setuid-sandbox"],
   });
-
-  const contextOptions = {
+  const context = await browser.newContext({
     viewport: { width: 1280, height: 900 },
     locale: "ko-KR",
     timezoneId: "Asia/Seoul",
-  };
-
-  // Load existing storageState if available
-  if (STORAGE_STATE_PATH && await fileExists(STORAGE_STATE_PATH)) {
-    try {
-      const raw = await readFile(STORAGE_STATE_PATH, "utf8");
-      contextOptions.storageState = JSON.parse(raw);
-      console.log("[login-helper] loaded existing storageState");
-    } catch (e) {
-      console.log("[login-helper] failed to load storageState:", e.message);
-    }
-  }
-
-  const context = await browser.newContext(contextOptions);
+  });
   const page = await context.newPage();
 
+  await writeFile("/tmp/ready", "ok");
+  await setStatus("filling");
+
   // Navigate to Kakao login
-  console.log("[login-helper] navigating to Kakao login");
   const loginUrl = "https://accounts.kakao.com/login/?continue=https%3A%2F%2Flogins.daum.net%2Faccounts%2Fksso.do%3Frescue%3Dtrue%26url%3Dhttps%253A%252F%252Fwww.daum.net%252F";
   await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
   await page.waitForTimeout(2000);
 
-  // Fill credentials if available
+  // Fill credentials
   if (DAUM_EMAIL) {
-    console.log("[login-helper] filling credentials");
     try {
-      // Try to find and fill the email field
-      const emailInput = page.locator('input[name="loginId"], input[id="loginId--1"], input[type="email"], input[placeholder*="이메일"], input[placeholder*="카카오메일"]');
+      const emailInput = page.locator('input[name="loginId"], input[id="loginId--1"], input[type="email"], input[placeholder*="이메일"], input[placeholder*="카카오"]');
       if (await emailInput.count() > 0) {
+        await emailInput.first().click();
         await emailInput.first().fill(DAUM_EMAIL);
-        await page.waitForTimeout(500);
+        await page.waitForTimeout(300);
       }
 
-      // Fill password
       const pwInput = page.locator('input[name="password"], input[id="password--2"], input[type="password"]');
       if (await pwInput.count() > 0) {
+        await pwInput.first().click();
         await pwInput.first().fill(DAUM_PASSWORD);
-        await page.waitForTimeout(500);
+        await page.waitForTimeout(300);
       }
 
-      // Click login button
       const loginBtn = page.locator('button[type="submit"], button:has-text("로그인")');
       if (await loginBtn.count() > 0) {
         await loginBtn.first().click();
-        console.log("[login-helper] clicked login button");
-        await page.waitForTimeout(3000);
+        console.log("[login-helper] clicked login button, waiting for response...");
+        await page.waitForTimeout(5000);
       }
     } catch (e) {
       console.log("[login-helper] credential fill error:", e.message);
     }
   }
 
-  // Take initial screenshot and signal ready
-  await takeScreenshot(page);
-  await writeStatus(page);
-  await writeFile(READY_PATH, "ok");
-  console.log("[login-helper] ready, entering main loop");
+  // Check current state: did we land on 2FA or are we logged in?
+  const currentUrl = page.url();
+  console.log("[login-helper] current URL:", currentUrl);
 
-  // Main loop
-  let loopCount = 0;
-  const MAX_LOOPS = 300; // 5 min at 1s interval
-  while (loopCount < MAX_LOOPS) {
-    loopCount++;
+  // Check if we're on daum.net (login success) or still on kakao (2FA needed)
+  if (currentUrl.includes("daum.net") && !currentUrl.includes("accounts.kakao")) {
+    // Already logged in
+    await saveAndExit(context, browser);
+    return;
+  }
 
-    // Take screenshot
-    await takeScreenshot(page);
-    await writeStatus(page);
+  // Likely 2FA screen — signal and wait for code
+  await setStatus("2fa");
+  console.log("[login-helper] 2FA detected, waiting for /tmp/code...");
 
-    // Check for command
-    if (await fileExists(COMMAND_PATH)) {
+  // Wait up to 5 minutes for the code
+  for (let i = 0; i < 300; i++) {
+    if (await fileExists("/tmp/code")) {
+      const code = (await readFile("/tmp/code", "utf8")).trim();
+      console.log("[login-helper] received code, typing...");
+      await setStatus("submitting");
+
+      // Type the code into the current page
+      // Kakao 2FA usually has an input for the verification code
       try {
-        const raw = await readFile(COMMAND_PATH, "utf8");
-        await unlink(COMMAND_PATH);
-        const cmd = JSON.parse(raw);
-        console.log("[login-helper] executing command:", cmd.action);
+        const codeInput = page.locator('input[type="tel"], input[type="number"], input[type="text"][maxlength], input[placeholder*="인증"], input[name="code"]');
+        if (await codeInput.count() > 0) {
+          await codeInput.first().click();
+          await codeInput.first().fill(code);
+          await page.waitForTimeout(500);
 
-        if (cmd.action === "type") {
-          await page.keyboard.type(cmd.text || "", { delay: 50 });
-        } else if (cmd.action === "click") {
-          await page.mouse.click(cmd.x, cmd.y);
-        } else if (cmd.action === "press") {
-          await page.keyboard.press(cmd.key || "Enter");
-        } else if (cmd.action === "navigate") {
-          await page.goto(cmd.url, { waitUntil: "domcontentloaded", timeout: 15000 });
-        } else if (cmd.action === "fill") {
-          const el = page.locator(cmd.selector);
-          if (await el.count() > 0) {
-            await el.first().fill(cmd.text || "");
+          // Click confirm/submit button
+          const confirmBtn = page.locator('button[type="submit"], button:has-text("확인"), button:has-text("인증")');
+          if (await confirmBtn.count() > 0) {
+            await confirmBtn.first().click();
           }
+        } else {
+          // Fallback: just type the code and press Enter
+          await page.keyboard.type(code, { delay: 50 });
+          await page.keyboard.press("Enter");
         }
 
-        await page.waitForTimeout(1000);
-        await takeScreenshot(page);
-        await writeStatus(page);
+        await page.waitForTimeout(5000);
+
+        // Check if login succeeded
+        const afterUrl = page.url();
+        if (afterUrl.includes("daum.net") && !afterUrl.includes("accounts.kakao")) {
+          await saveAndExit(context, browser);
+          return;
+        }
+
+        // Maybe there's another step — wait a bit more
+        await page.waitForTimeout(3000);
+        await saveAndExit(context, browser);
+        return;
       } catch (e) {
-        console.log("[login-helper] command error:", e.message);
+        await setStatus(`error:${e.message}`);
+        break;
       }
     }
-
-    // Check for done signal
-    if (await fileExists(DONE_PATH)) {
-      console.log("[login-helper] done signal received, saving storageState");
-      const state = await context.storageState();
-      await writeFile(STATE_PATH, JSON.stringify(state));
-      await writeFile(DONE_PATH, "saved");
-      break;
-    }
-
     await new Promise((r) => setTimeout(r, 1000));
   }
 
-  console.log("[login-helper] shutting down");
+  await setStatus("error:timeout waiting for 2FA code");
   await browser.close();
 }
 
-async function takeScreenshot(page) {
-  try {
-    const buf = await page.screenshot({ type: "png" });
-    await writeFile(SCREENSHOT_PATH, buf.toString("base64"));
-  } catch (e) {
-    console.log("[login-helper] screenshot error:", e.message);
-  }
+async function saveAndExit(context, browser) {
+  const state = await context.storageState();
+  await writeFile("/tmp/storageState.json", JSON.stringify(state));
+  await setStatus("done");
+  console.log(`[login-helper] saved ${state.cookies.length} cookies`);
+  await browser.close();
 }
 
-async function writeStatus(page) {
-  try {
-    await writeFile(STATUS_PATH, JSON.stringify({
-      url: page.url(),
-      title: await page.title(),
-    }));
-  } catch { /* ignore */ }
-}
-
-main().catch((err) => {
+main().catch(async (err) => {
   console.error("[login-helper] fatal:", err);
+  await setStatus(`error:${err.message}`).catch(() => {});
   process.exit(1);
 });

@@ -8,10 +8,7 @@ import { put, list } from "@vercel/blob";
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
-const activeSessions = new Map<
-  string,
-  { sandbox: Sandbox; createdAt: number }
->();
+const activeSessions = new Map<string, { sandbox: Sandbox; createdAt: number }>();
 
 const SANDBOX_WORKDIR = "/vercel/sandbox/agent";
 const CHROMIUM_SYSTEM_DEPS = [
@@ -29,38 +26,18 @@ function getSandboxCredentials() {
   return {};
 }
 
-/** Capture stdout of a sandbox command into a string. */
-function captureStdout(): { stream: Writable; getOutput: () => string } {
+async function readSandboxFile(sandbox: Sandbox, filePath: string): Promise<string> {
   let buf = "";
   const stream = new Writable({
     write(chunk: Buffer, _enc, cb) { buf += chunk.toString("utf8"); cb(); },
   });
-  return { stream, getOutput: () => buf };
-}
-
-/** Read a file from the sandbox via cat. */
-async function readSandboxFile(sandbox: Sandbox, filePath: string): Promise<string> {
-  const { stream, getOutput } = captureStdout();
   await sandbox.runCommand({
     cmd: "sh",
     args: ["-c", `cat ${filePath} 2>/dev/null || echo ""`],
     cwd: "/",
     stdout: stream,
   });
-  return getOutput().trim();
-}
-
-async function getScreenshot(sandbox: Sandbox, sessionId?: string) {
-  const b64 = await readSandboxFile(sandbox, "/tmp/screenshot.b64");
-  const statusRaw = await readSandboxFile(sandbox, "/tmp/status.json");
-  let status = { url: "", title: "" };
-  try { status = JSON.parse(statusRaw || "{}"); } catch { /* ignore */ }
-
-  return Response.json({
-    ...(sessionId ? { sessionId } : {}),
-    screenshot: b64,
-    status,
-  });
+  return buf.trim();
 }
 
 export async function POST(req: Request) {
@@ -68,55 +45,50 @@ export async function POST(req: Request) {
   const action = (body.action as string) ?? "start";
   const sessionId = body.sessionId as string | undefined;
 
-  // ─── send command ───
-  if (action === "command" && sessionId) {
+  // ─── submit 2FA code ───
+  if (action === "code" && sessionId) {
     const session = activeSessions.get(sessionId);
     if (!session) return Response.json({ error: "session not found" }, { status: 404 });
 
-    await session.sandbox.writeFiles([
-      { path: "/tmp/command.json", content: JSON.stringify(body.command) },
-    ]);
-    await new Promise((r) => setTimeout(r, 2000));
-    return getScreenshot(session.sandbox);
-  }
+    const code = String(body.code ?? "");
+    await session.sandbox.writeFiles([{ path: "/tmp/code", content: code }]);
 
-  // ─── get screenshot ───
-  if (action === "screenshot" && sessionId) {
-    const session = activeSessions.get(sessionId);
-    if (!session) return Response.json({ error: "session not found" }, { status: 404 });
-    return getScreenshot(session.sandbox);
-  }
-
-  // ─── save session ───
-  if (action === "save" && sessionId) {
-    const session = activeSessions.get(sessionId);
-    if (!session) return Response.json({ error: "session not found" }, { status: 404 });
-
-    await session.sandbox.writeFiles([{ path: "/tmp/done", content: "please" }]);
-    await new Promise((r) => setTimeout(r, 4000));
-
-    const stateJson = await readSandboxFile(session.sandbox, "/tmp/storageState.json");
-    if (!stateJson || stateJson === '""') {
-      await session.sandbox.stop().catch(() => {});
-      activeSessions.delete(sessionId);
-      return Response.json({ error: "Failed to read storageState" }, { status: 500 });
+    // Wait for the helper to process it
+    for (let i = 0; i < 15; i++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      const status = await readSandboxFile(session.sandbox, "/tmp/status");
+      if (status === "done") {
+        // Read and save storageState
+        const stateJson = await readSandboxFile(session.sandbox, "/tmp/storageState.json");
+        if (stateJson && stateJson !== '""') {
+          const blobKey = process.env.DAUM_SESSION_BLOB_KEY ?? "sessions/daum-storage-state.json";
+          const token = process.env.BLOB_READ_WRITE_TOKEN;
+          if (token) {
+            await put(blobKey, stateJson, {
+              access: "public", addRandomSuffix: false, allowOverwrite: true,
+              contentType: "application/json", token,
+            });
+          }
+        }
+        await session.sandbox.stop().catch(() => {});
+        activeSessions.delete(sessionId);
+        return Response.json({ status: "done" });
+      }
+      if (status.startsWith("error:")) {
+        await session.sandbox.stop().catch(() => {});
+        activeSessions.delete(sessionId);
+        return Response.json({ status: "error", message: status.slice(6) });
+      }
     }
+    return Response.json({ status: "timeout" });
+  }
 
-    const blobKey = process.env.DAUM_SESSION_BLOB_KEY ?? "sessions/daum-storage-state.json";
-    const token = process.env.BLOB_READ_WRITE_TOKEN;
-    if (!token) return Response.json({ error: "BLOB_READ_WRITE_TOKEN not set" }, { status: 500 });
-
-    const blob = await put(blobKey, stateJson, {
-      access: "public",
-      addRandomSuffix: false,
-      allowOverwrite: true,
-      contentType: "application/json",
-      token,
-    });
-
-    await session.sandbox.stop().catch(() => {});
-    activeSessions.delete(sessionId);
-    return Response.json({ ok: true, blobUrl: blob.url });
+  // ─── poll status ───
+  if (action === "status" && sessionId) {
+    const session = activeSessions.get(sessionId);
+    if (!session) return Response.json({ error: "session not found" }, { status: 404 });
+    const status = await readSandboxFile(session.sandbox, "/tmp/status");
+    return Response.json({ status });
   }
 
   // ─── stop ───
@@ -129,7 +101,7 @@ export async function POST(req: Request) {
     return Response.json({ ok: true });
   }
 
-  // ─── start new login ───
+  // ─── start login ───
   const id = crypto.randomUUID().slice(0, 8);
   const credentials = getSandboxCredentials();
   const snapshotId = process.env.AGENT_BROWSER_SNAPSHOT_ID;
@@ -146,11 +118,9 @@ export async function POST(req: Request) {
   }
 
   const root = process.cwd();
-  const helperSrc = await readFile(path.join(root, "sandbox/login-helper.mjs"), "utf8");
-  const pkgSrc = await readFile(path.join(root, "sandbox/package.json"), "utf8");
   await sandbox.writeFiles([
-    { path: `${SANDBOX_WORKDIR}/login-helper.mjs`, content: helperSrc },
-    { path: `${SANDBOX_WORKDIR}/package.json`, content: pkgSrc },
+    { path: `${SANDBOX_WORKDIR}/login-helper.mjs`, content: await readFile(path.join(root, "sandbox/login-helper.mjs"), "utf8") },
+    { path: `${SANDBOX_WORKDIR}/package.json`, content: await readFile(path.join(root, "sandbox/package.json"), "utf8") },
   ]);
 
   if (!snapshotId) {
@@ -158,38 +128,44 @@ export async function POST(req: Request) {
     await sandbox.runCommand({ cmd: "npx", args: ["playwright", "install", "chromium"], cwd: SANDBOX_WORKDIR });
   }
 
-  // Load existing storageState if available
-  try {
-    const prefix = process.env.DAUM_SESSION_BLOB_KEY ?? "sessions/daum-storage-state.json";
-    const token = process.env.BLOB_READ_WRITE_TOKEN!;
-    const { blobs } = await list({ prefix, limit: 1, token });
-    if (blobs.length > 0) {
-      const res = await fetch(blobs[0].url);
-      if (res.ok) {
-        await sandbox.writeFiles([{ path: "/tmp/existing-storage-state.json", content: await res.text() }]);
-      }
-    }
-  } catch { /* fine */ }
-
-  // Start login helper in background (don't await)
+  // Start login helper (don't await — it runs in background)
   sandbox.runCommand({
-    cmd: "node",
-    args: ["login-helper.mjs"],
-    cwd: SANDBOX_WORKDIR,
-    env: {
-      DAUM_EMAIL: process.env.DAUM_EMAIL ?? "",
-      DAUM_PASSWORD: process.env.DAUM_PASSWORD ?? "",
-      STORAGE_STATE_PATH: "/tmp/existing-storage-state.json",
-    },
+    cmd: "node", args: ["login-helper.mjs"], cwd: SANDBOX_WORKDIR,
+    env: { DAUM_EMAIL: process.env.DAUM_EMAIL ?? "", DAUM_PASSWORD: process.env.DAUM_PASSWORD ?? "" },
   }).catch(() => {});
 
-  // Poll until ready
+  // Wait for ready
   for (let i = 0; i < 60; i++) {
     const check = await readSandboxFile(sandbox, "/tmp/ready");
     if (check === "ok") break;
     await new Promise((r) => setTimeout(r, 2000));
   }
 
+  // Wait for status to settle (filling → 2fa or done)
+  let status = "filling";
+  for (let i = 0; i < 30; i++) {
+    await new Promise((r) => setTimeout(r, 2000));
+    status = await readSandboxFile(sandbox, "/tmp/status");
+    if (status !== "filling") break;
+  }
+
+  // If already done (no 2FA needed), save and return
+  if (status === "done") {
+    const stateJson = await readSandboxFile(sandbox, "/tmp/storageState.json");
+    if (stateJson && stateJson !== '""') {
+      const token = process.env.BLOB_READ_WRITE_TOKEN;
+      if (token) {
+        await put(
+          process.env.DAUM_SESSION_BLOB_KEY ?? "sessions/daum-storage-state.json",
+          stateJson,
+          { access: "public", addRandomSuffix: false, allowOverwrite: true, contentType: "application/json", token },
+        );
+      }
+    }
+    await sandbox.stop().catch(() => {});
+    return Response.json({ sessionId: id, status: "done" });
+  }
+
   activeSessions.set(id, { sandbox, createdAt: Date.now() });
-  return getScreenshot(sandbox, id);
+  return Response.json({ sessionId: id, status });
 }

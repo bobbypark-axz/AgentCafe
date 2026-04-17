@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 
 type LogEvent = {
   kind: string;
@@ -442,41 +442,10 @@ function Spinner({ className = "" }: { className?: string }) {
 /* ─── Login Modal ────────────────────────── */
 
 function LoginModal({ onClose }: { onClose: () => void }) {
-  const [phase, setPhase] = useState<"idle" | "starting" | "active" | "saving" | "done">("idle");
+  const [phase, setPhase] = useState<"idle" | "starting" | "2fa" | "submitting" | "done" | "error">("idle");
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [screenshot, setScreenshot] = useState<string | null>(null);
-  const [statusInfo, setStatusInfo] = useState<{ url?: string; title?: string }>({});
-  const [inputText, setInputText] = useState("");
+  const [code, setCode] = useState("");
   const [message, setMessage] = useState("");
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const stopPolling = useCallback(() => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }, []);
-
-  // Poll for screenshots
-  useEffect(() => {
-    if (phase !== "active" || !sessionId) return;
-    const poll = async () => {
-      try {
-        const res = await fetch("/api/auth", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ action: "screenshot", sessionId }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.screenshot) setScreenshot(data.screenshot);
-          if (data.status) setStatusInfo(data.status);
-        }
-      } catch { /* ignore */ }
-    };
-    pollRef.current = setInterval(poll, 3000);
-    return stopPolling;
-  }, [phase, sessionId, stopPolling]);
 
   async function startLogin() {
     setPhase("starting");
@@ -489,79 +458,59 @@ function LoginModal({ onClose }: { onClose: () => void }) {
       });
       const data = await res.json();
       if (data.error) {
-        setMessage(`오류: ${data.error}`);
-        setPhase("idle");
+        setMessage(data.error);
+        setPhase("error");
         return;
       }
       setSessionId(data.sessionId);
-      setScreenshot(data.screenshot);
-      setStatusInfo(data.status ?? {});
-      setPhase("active");
-      setMessage("");
-    } catch (err) {
-      setMessage(`오류: ${(err as Error).message}`);
-      setPhase("idle");
-    }
-  }
-
-  async function sendCommand(cmd: Record<string, unknown>) {
-    if (!sessionId) return;
-    try {
-      const res = await fetch("/api/auth", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "command", sessionId, command: cmd }),
-      });
-      const data = await res.json();
-      if (data.screenshot) setScreenshot(data.screenshot);
-      if (data.status) setStatusInfo(data.status);
-    } catch { /* ignore */ }
-  }
-
-  async function handleType() {
-    if (!inputText.trim()) return;
-    await sendCommand({ action: "type", text: inputText });
-    setInputText("");
-  }
-
-  async function handleClick(e: React.MouseEvent<HTMLImageElement>) {
-    const img = e.currentTarget;
-    const rect = img.getBoundingClientRect();
-    const scaleX = 1280 / rect.width;
-    const scaleY = 900 / rect.height;
-    const x = Math.round((e.clientX - rect.left) * scaleX);
-    const y = Math.round((e.clientY - rect.top) * scaleY);
-    await sendCommand({ action: "click", x, y });
-  }
-
-  async function saveSession() {
-    if (!sessionId) return;
-    setPhase("saving");
-    setMessage("세션 저장 중...");
-    stopPolling();
-    try {
-      const res = await fetch("/api/auth", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "save", sessionId }),
-      });
-      const data = await res.json();
-      if (data.ok) {
+      if (data.status === "done") {
         setPhase("done");
-        setMessage("세션이 저장되었습니다! 이제 글쓰기가 가능합니다.");
+        setMessage("이미 로그인돼 있어서 세션이 바로 저장됐습니다!");
+      } else if (data.status === "2fa") {
+        setPhase("2fa");
+        setMessage("카카오에서 인증번호가 전송됐습니다. 아래에 입력해주세요.");
+      } else if (data.status?.startsWith("error:")) {
+        setMessage(data.status.slice(6));
+        setPhase("error");
       } else {
-        setMessage(`저장 실패: ${data.error}`);
-        setPhase("active");
+        setPhase("2fa");
+        setMessage("인증번호를 입력해주세요 (상태: " + data.status + ")");
       }
     } catch (err) {
-      setMessage(`오류: ${(err as Error).message}`);
-      setPhase("active");
+      setMessage((err as Error).message);
+      setPhase("error");
     }
   }
 
-  async function handleStop() {
-    stopPolling();
-    if (sessionId) {
+  async function submitCode() {
+    if (!code.trim() || !sessionId) return;
+    setPhase("submitting");
+    setMessage("인증번호 제출 중...");
+    try {
+      const res = await fetch("/api/auth", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "code", sessionId, code: code.trim() }),
+      });
+      const data = await res.json();
+      if (data.status === "done") {
+        setPhase("done");
+        setMessage("로그인 성공! 세션이 저장됐습니다.");
+      } else if (data.status === "error") {
+        setMessage(data.message || "인증 실패");
+        setPhase("2fa");
+      } else {
+        setMessage("시간 초과. 다시 시도해주세요.");
+        setPhase("2fa");
+      }
+    } catch (err) {
+      setMessage((err as Error).message);
+      setPhase("2fa");
+    }
+  }
+
+  async function handleClose() {
+    if (sessionId && phase !== "done") {
       await fetch("/api/auth", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -573,24 +522,24 @@ function LoginModal({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-      <div className="bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden">
-        {/* Modal header */}
-        <div className="px-5 py-3 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between shrink-0">
-          <h2 className="text-sm font-semibold">다음 카페 세션 로그인</h2>
-          <button onClick={handleStop} className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200">
+      <div className="bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-2xl w-full max-w-md overflow-hidden">
+        {/* Header */}
+        <div className="px-5 py-3 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between">
+          <h2 className="text-sm font-semibold">카카오 로그인</h2>
+          <button onClick={handleClose} className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200">
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>
         </div>
 
-        {/* Modal body */}
-        <div className="flex-1 overflow-auto p-5 space-y-4">
+        {/* Body */}
+        <div className="p-5 space-y-4">
           {phase === "idle" && (
-            <div className="text-center py-8 space-y-4">
+            <div className="text-center space-y-4">
               <p className="text-sm text-zinc-500">
-                Sandbox에서 브라우저를 열고 카카오 로그인을 진행합니다.<br />
-                2차 인증이 필요하면 이 화면에서 직접 입력할 수 있습니다.
+                자동으로 이메일/비밀번호를 입력한 뒤,<br />
+                2차 인증번호만 여기서 넘겨주면 됩니다.
               </p>
               <button onClick={startLogin} className="inline-flex items-center gap-2 rounded-lg bg-sky-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-sky-500 transition-colors">
                 로그인 시작
@@ -599,83 +548,41 @@ function LoginModal({ onClose }: { onClose: () => void }) {
           )}
 
           {phase === "starting" && (
-            <div className="text-center py-12 space-y-3">
+            <div className="text-center py-8 space-y-3">
               <Spinner className="mx-auto text-sky-500 !h-8 !w-8" />
               <p className="text-sm text-zinc-400">{message}</p>
             </div>
           )}
 
-          {(phase === "active" || phase === "saving") && (
-            <>
-              {/* Status bar */}
-              <div className="text-xs text-zinc-400 truncate">
-                {statusInfo.title && <span className="font-medium text-zinc-500 dark:text-zinc-300">{statusInfo.title}</span>}
-                {statusInfo.url && <span className="ml-2">{statusInfo.url}</span>}
-              </div>
-
-              {/* Screenshot — clickable */}
-              {screenshot && (
-                <div className="border border-zinc-200 dark:border-zinc-700 rounded-lg overflow-hidden cursor-crosshair">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={`data:image/png;base64,${screenshot}`}
-                    alt="Browser"
-                    className="w-full"
-                    onClick={handleClick}
-                  />
-                </div>
-              )}
-
-              {/* Input controls */}
+          {(phase === "2fa" || phase === "submitting") && (
+            <div className="space-y-4">
+              <p className="text-sm text-zinc-600 dark:text-zinc-300">{message}</p>
               <div className="flex gap-2">
                 <input
-                  className="input-base flex-1"
-                  value={inputText}
-                  onChange={(e) => setInputText(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") { e.preventDefault(); handleType(); }
-                  }}
-                  placeholder="텍스트 입력 (2FA 코드, 등)"
-                  disabled={phase === "saving"}
+                  className="input-base flex-1 text-center text-lg tracking-widest"
+                  value={code}
+                  onChange={(e) => setCode(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") submitCode(); }}
+                  placeholder="인증번호"
+                  maxLength={10}
+                  autoFocus
+                  disabled={phase === "submitting"}
                 />
                 <button
                   type="button"
-                  onClick={handleType}
-                  disabled={phase === "saving" || !inputText.trim()}
-                  className="rounded-lg bg-zinc-200 dark:bg-zinc-700 px-3 py-2 text-xs font-medium hover:bg-zinc-300 dark:hover:bg-zinc-600 disabled:opacity-50 transition-colors"
+                  onClick={submitCode}
+                  disabled={phase === "submitting" || !code.trim()}
+                  className="inline-flex items-center gap-2 rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50 transition-colors"
                 >
-                  입력
-                </button>
-                <button
-                  type="button"
-                  onClick={() => sendCommand({ action: "press", key: "Enter" })}
-                  disabled={phase === "saving"}
-                  className="rounded-lg bg-zinc-200 dark:bg-zinc-700 px-3 py-2 text-xs font-medium hover:bg-zinc-300 dark:hover:bg-zinc-600 disabled:opacity-50 transition-colors"
-                >
-                  Enter
+                  {phase === "submitting" && <Spinner />}
+                  확인
                 </button>
               </div>
-
-              {/* Action buttons */}
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={saveSession}
-                  disabled={phase === "saving"}
-                  className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50 transition-colors"
-                >
-                  {phase === "saving" && <Spinner />}
-                  {phase === "saving" ? "저장 중..." : "로그인 완료 — 세션 저장"}
-                </button>
-                <p className="text-xs text-zinc-400">
-                  로그인 완료 후 이 버튼을 누르세요
-                </p>
-              </div>
-            </>
+            </div>
           )}
 
           {phase === "done" && (
-            <div className="text-center py-8 space-y-4">
+            <div className="text-center py-4 space-y-4">
               <div className="flex items-center justify-center w-12 h-12 rounded-full bg-emerald-100 dark:bg-emerald-900/30 mx-auto">
                 <span className="text-emerald-600 dark:text-emerald-400 text-xl">&#10003;</span>
               </div>
@@ -686,8 +593,18 @@ function LoginModal({ onClose }: { onClose: () => void }) {
             </div>
           )}
 
-          {message && phase !== "done" && phase !== "starting" && (
-            <p className="text-xs text-amber-500">{message}</p>
+          {phase === "error" && (
+            <div className="text-center py-4 space-y-4">
+              <p className="text-sm text-red-500">{message}</p>
+              <div className="flex justify-center gap-2">
+                <button onClick={startLogin} className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 transition-colors">
+                  다시 시도
+                </button>
+                <button onClick={handleClose} className="rounded-lg bg-zinc-200 dark:bg-zinc-700 px-4 py-2 text-sm font-medium hover:bg-zinc-300 dark:hover:bg-zinc-600 transition-colors">
+                  닫기
+                </button>
+              </div>
+            </div>
           )}
         </div>
       </div>
