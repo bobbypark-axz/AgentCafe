@@ -1,0 +1,42 @@
+{
+  "name": "agent-cafe",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "seed": "tsx --env-file=.env.local scripts/seed-session.ts",
+    "snapshot": "tsx --env-file=.env.local scripts/create-snapshot.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.69",
+    "@ai-sdk/gateway": "^3.0.98",
+    "@ai-sdk/mcp": "^1.0.36",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@vercel/blob": "^2.3.3",
+    "@vercel/sandbox": "^1.10.0",
+    "ai": "^6.0.161",
+    "ms": "^2.1.3",
+    "next": "16.2.3",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@playwright/mcp": "^0.0.70",
+    "@tailwindcss/postcss": "^4",
+    "@types/ms": "^2.1.0",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "dotenv": "^17.4.2",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.3",
+    "playwright": "^1.60.0-alpha-1774999321000",
+    "tailwindcss": "^4",
+    "tsx": "^4.21.0",
+    "typescript": "^5"
+  }
+}
