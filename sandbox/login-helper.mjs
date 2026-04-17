@@ -14,7 +14,7 @@
  *   /tmp/storageState.json — captured session
  *   /tmp/ready    — signals the helper is running
  */
-import { chromium } from "playwright";
+import { chromium } from "playwright-core";
 import { writeFile, readFile, access } from "node:fs/promises";
 
 const DAUM_EMAIL = process.env.DAUM_EMAIL || "";
