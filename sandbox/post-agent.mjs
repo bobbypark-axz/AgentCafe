@@ -33,6 +33,8 @@ async function main() {
     LENGTH = "medium",
     TONE = "",
     MODEL_ID = "anthropic/claude-sonnet-4.6",
+    DAUM_EMAIL = "",
+    DAUM_PASSWORD = "",
   } = process.env;
 
   if (!SESSION_BLOB_URL) throw new Error("SESSION_BLOB_URL is required");
@@ -134,9 +136,23 @@ STEP 1 — Invent the content (do this in your reasoning, BEFORE calling tools).
                   · NO markdown. Plain text only.
   ${toneGuide}
 
+STEP 1.5 — Login if needed.
+  After navigating to the cafe, check if you are logged in (look for "로그인"
+  button in the header — if it says "로그인" you are NOT logged in).
+  If not logged in:
+  a) browser_navigate to https://accounts.kakao.com/login/?continue=https%3A%2F%2Fwww.daum.net%2F
+  b) browser_snapshot to see the login form.
+  c) Fill in the email field with: ${JSON.stringify(DAUM_EMAIL)}
+  d) Fill in the password field with: ${JSON.stringify(DAUM_PASSWORD)}
+  e) Click the login/submit button.
+  f) Wait for redirect, then browser_snapshot to confirm login success.
+  g) Navigate back to the cafe URL.
+  If DAUM_EMAIL is empty, skip login and report "session expired, no credentials".
+
 STEP 2 — Navigate the cafe.
   - browser_navigate to ${CAFE_URL}
   - browser_snapshot to orient yourself.
+  - Check if logged in first (see STEP 1.5). If "로그인" appears, do STEP 1.5.
   - Look for the 글쓰기 (write) button. On Daum cafes this might be:
       · A "글쓰기" link in the left sidebar board list
       · A "+" / 글쓰기 button at the top of the board page
@@ -165,7 +181,8 @@ STEP 5 — Report.
 GUARDRAILS
   - Stay on daum.net / cafe.daum.net.
   - No promotional, political, hateful, or spam content.
-  - If you hit a login screen, captcha, or "의심스러운 접속" — stop, report.
+  - If you hit a login screen, use STEP 1.5 to log in with provided credentials.
+  - If you hit a captcha or "의심스러운 접속" — stop, report.
   - If no board allows writing (permission error), stop and report which.
   - Prefer browser_snapshot over browser_screenshot.
 `.trim();

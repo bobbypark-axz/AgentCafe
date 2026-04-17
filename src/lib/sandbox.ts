@@ -427,6 +427,8 @@ export function runSandboxPostAgent(
           TONE: params.tone ?? "",
           MODEL_ID: params.modelId ?? "anthropic/claude-sonnet-4.6",
           ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? "",
+          DAUM_EMAIL: process.env.DAUM_EMAIL ?? "",
+          DAUM_PASSWORD: process.env.DAUM_PASSWORD ?? "",
           VERCEL_OIDC_TOKEN: process.env.VERCEL_OIDC_TOKEN ?? "",
         },
         stdout: makeLineSink("agent"),
