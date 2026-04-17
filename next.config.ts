@@ -15,6 +15,10 @@ const nextConfig: NextConfig = {
       "./sandbox/post-agent.mjs",
       "./sandbox/package.json",
     ],
+    "/api/auth": [
+      "./sandbox/login-helper.mjs",
+      "./sandbox/package.json",
+    ],
   },
   // @vercel/sandbox is Node-only; keep it out of any edge bundles.
   serverExternalPackages: ["@vercel/sandbox", "@vercel/blob"],

@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 type LogEvent = {
   kind: string;
@@ -31,6 +31,7 @@ export function CafeForm() {
   const [events, setEvents] = useState<LogEvent[]>([]);
   const [finalUrl, setFinalUrl] = useState<string | null>(null);
   const [logOpen, setLogOpen] = useState(false);
+  const [loginOpen, setLoginOpen] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const logEndRef = useRef<HTMLDivElement | null>(null);
 
@@ -125,7 +126,7 @@ export function CafeForm() {
           <div className="flex items-center justify-center w-9 h-9 rounded-lg bg-sky-600 text-white font-bold text-sm shrink-0">
             AC
           </div>
-          <div>
+          <div className="flex-1">
             <h1 className="text-lg font-semibold tracking-tight leading-tight">
               AgentCafe
             </h1>
@@ -133,6 +134,16 @@ export function CafeForm() {
               Claude가 글을 창작해서 다음 카페에 게시합니다
             </p>
           </div>
+          <button
+            type="button"
+            onClick={() => setLoginOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-300 dark:border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z" />
+            </svg>
+            세션 로그인
+          </button>
         </div>
       </header>
 
@@ -362,6 +373,9 @@ export function CafeForm() {
         )}
       </main>
 
+      {/* Login Modal */}
+      {loginOpen && <LoginModal onClose={() => setLoginOpen(false)} />}
+
       {/* Footer */}
       <footer className="border-t border-zinc-200 dark:border-zinc-800 py-3">
         <p className="text-center text-xs text-zinc-400">
@@ -422,6 +436,262 @@ function Spinner({ className = "" }: { className?: string }) {
         d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
       />
     </svg>
+  );
+}
+
+/* ─── Login Modal ────────────────────────── */
+
+function LoginModal({ onClose }: { onClose: () => void }) {
+  const [phase, setPhase] = useState<"idle" | "starting" | "active" | "saving" | "done">("idle");
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [screenshot, setScreenshot] = useState<string | null>(null);
+  const [statusInfo, setStatusInfo] = useState<{ url?: string; title?: string }>({});
+  const [inputText, setInputText] = useState("");
+  const [message, setMessage] = useState("");
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const stopPolling = useCallback(() => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }, []);
+
+  // Poll for screenshots
+  useEffect(() => {
+    if (phase !== "active" || !sessionId) return;
+    const poll = async () => {
+      try {
+        const res = await fetch("/api/auth", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action: "screenshot", sessionId }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.screenshot) setScreenshot(data.screenshot);
+          if (data.status) setStatusInfo(data.status);
+        }
+      } catch { /* ignore */ }
+    };
+    pollRef.current = setInterval(poll, 3000);
+    return stopPolling;
+  }, [phase, sessionId, stopPolling]);
+
+  async function startLogin() {
+    setPhase("starting");
+    setMessage("Sandbox 준비 중... (1~2분 소요)");
+    try {
+      const res = await fetch("/api/auth", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "start" }),
+      });
+      const data = await res.json();
+      if (data.error) {
+        setMessage(`오류: ${data.error}`);
+        setPhase("idle");
+        return;
+      }
+      setSessionId(data.sessionId);
+      setScreenshot(data.screenshot);
+      setStatusInfo(data.status ?? {});
+      setPhase("active");
+      setMessage("");
+    } catch (err) {
+      setMessage(`오류: ${(err as Error).message}`);
+      setPhase("idle");
+    }
+  }
+
+  async function sendCommand(cmd: Record<string, unknown>) {
+    if (!sessionId) return;
+    try {
+      const res = await fetch("/api/auth", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "command", sessionId, command: cmd }),
+      });
+      const data = await res.json();
+      if (data.screenshot) setScreenshot(data.screenshot);
+      if (data.status) setStatusInfo(data.status);
+    } catch { /* ignore */ }
+  }
+
+  async function handleType() {
+    if (!inputText.trim()) return;
+    await sendCommand({ action: "type", text: inputText });
+    setInputText("");
+  }
+
+  async function handleClick(e: React.MouseEvent<HTMLImageElement>) {
+    const img = e.currentTarget;
+    const rect = img.getBoundingClientRect();
+    const scaleX = 1280 / rect.width;
+    const scaleY = 900 / rect.height;
+    const x = Math.round((e.clientX - rect.left) * scaleX);
+    const y = Math.round((e.clientY - rect.top) * scaleY);
+    await sendCommand({ action: "click", x, y });
+  }
+
+  async function saveSession() {
+    if (!sessionId) return;
+    setPhase("saving");
+    setMessage("세션 저장 중...");
+    stopPolling();
+    try {
+      const res = await fetch("/api/auth", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "save", sessionId }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setPhase("done");
+        setMessage("세션이 저장되었습니다! 이제 글쓰기가 가능합니다.");
+      } else {
+        setMessage(`저장 실패: ${data.error}`);
+        setPhase("active");
+      }
+    } catch (err) {
+      setMessage(`오류: ${(err as Error).message}`);
+      setPhase("active");
+    }
+  }
+
+  async function handleStop() {
+    stopPolling();
+    if (sessionId) {
+      await fetch("/api/auth", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "stop", sessionId }),
+      }).catch(() => {});
+    }
+    onClose();
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden">
+        {/* Modal header */}
+        <div className="px-5 py-3 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between shrink-0">
+          <h2 className="text-sm font-semibold">다음 카페 세션 로그인</h2>
+          <button onClick={handleStop} className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Modal body */}
+        <div className="flex-1 overflow-auto p-5 space-y-4">
+          {phase === "idle" && (
+            <div className="text-center py-8 space-y-4">
+              <p className="text-sm text-zinc-500">
+                Sandbox에서 브라우저를 열고 카카오 로그인을 진행합니다.<br />
+                2차 인증이 필요하면 이 화면에서 직접 입력할 수 있습니다.
+              </p>
+              <button onClick={startLogin} className="inline-flex items-center gap-2 rounded-lg bg-sky-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-sky-500 transition-colors">
+                로그인 시작
+              </button>
+            </div>
+          )}
+
+          {phase === "starting" && (
+            <div className="text-center py-12 space-y-3">
+              <Spinner className="mx-auto text-sky-500 !h-8 !w-8" />
+              <p className="text-sm text-zinc-400">{message}</p>
+            </div>
+          )}
+
+          {(phase === "active" || phase === "saving") && (
+            <>
+              {/* Status bar */}
+              <div className="text-xs text-zinc-400 truncate">
+                {statusInfo.title && <span className="font-medium text-zinc-500 dark:text-zinc-300">{statusInfo.title}</span>}
+                {statusInfo.url && <span className="ml-2">{statusInfo.url}</span>}
+              </div>
+
+              {/* Screenshot — clickable */}
+              {screenshot && (
+                <div className="border border-zinc-200 dark:border-zinc-700 rounded-lg overflow-hidden cursor-crosshair">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={`data:image/png;base64,${screenshot}`}
+                    alt="Browser"
+                    className="w-full"
+                    onClick={handleClick}
+                  />
+                </div>
+              )}
+
+              {/* Input controls */}
+              <div className="flex gap-2">
+                <input
+                  className="input-base flex-1"
+                  value={inputText}
+                  onChange={(e) => setInputText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") { e.preventDefault(); handleType(); }
+                  }}
+                  placeholder="텍스트 입력 (2FA 코드, 등)"
+                  disabled={phase === "saving"}
+                />
+                <button
+                  type="button"
+                  onClick={handleType}
+                  disabled={phase === "saving" || !inputText.trim()}
+                  className="rounded-lg bg-zinc-200 dark:bg-zinc-700 px-3 py-2 text-xs font-medium hover:bg-zinc-300 dark:hover:bg-zinc-600 disabled:opacity-50 transition-colors"
+                >
+                  입력
+                </button>
+                <button
+                  type="button"
+                  onClick={() => sendCommand({ action: "press", key: "Enter" })}
+                  disabled={phase === "saving"}
+                  className="rounded-lg bg-zinc-200 dark:bg-zinc-700 px-3 py-2 text-xs font-medium hover:bg-zinc-300 dark:hover:bg-zinc-600 disabled:opacity-50 transition-colors"
+                >
+                  Enter
+                </button>
+              </div>
+
+              {/* Action buttons */}
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={saveSession}
+                  disabled={phase === "saving"}
+                  className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50 transition-colors"
+                >
+                  {phase === "saving" && <Spinner />}
+                  {phase === "saving" ? "저장 중..." : "로그인 완료 — 세션 저장"}
+                </button>
+                <p className="text-xs text-zinc-400">
+                  로그인 완료 후 이 버튼을 누르세요
+                </p>
+              </div>
+            </>
+          )}
+
+          {phase === "done" && (
+            <div className="text-center py-8 space-y-4">
+              <div className="flex items-center justify-center w-12 h-12 rounded-full bg-emerald-100 dark:bg-emerald-900/30 mx-auto">
+                <span className="text-emerald-600 dark:text-emerald-400 text-xl">&#10003;</span>
+              </div>
+              <p className="text-sm text-emerald-600 dark:text-emerald-400 font-medium">{message}</p>
+              <button onClick={onClose} className="rounded-lg bg-zinc-200 dark:bg-zinc-700 px-4 py-2 text-sm font-medium hover:bg-zinc-300 dark:hover:bg-zinc-600 transition-colors">
+                닫기
+              </button>
+            </div>
+          )}
+
+          {message && phase !== "done" && phase !== "starting" && (
+            <p className="text-xs text-amber-500">{message}</p>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
