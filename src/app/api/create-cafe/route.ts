@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { getDaumSessionBlobUrl } from "@/lib/blob";
 import { runLocalPostAgent } from "@/lib/local-agent";
+import { runSandboxPostAgent } from "@/lib/sandbox";
 
 export const runtime = "nodejs";
 export const maxDuration = 600;
@@ -38,17 +39,10 @@ export async function POST(req: Request) {
     );
   }
 
-  if (process.env.LOCAL_AGENT !== "1") {
-    return Response.json(
-      {
-        error:
-          "Remote sandbox post-writing not wired up yet. Set LOCAL_AGENT=1 and restart.",
-      },
-      { status: 501 },
-    );
-  }
-
-  const stream = runLocalPostAgent({ ...params, sessionBlobUrl }, req.signal);
+  const stream =
+    process.env.LOCAL_AGENT === "1"
+      ? runLocalPostAgent({ ...params, sessionBlobUrl }, req.signal)
+      : runSandboxPostAgent({ ...params, sessionBlobUrl }, req.signal);
 
   return new Response(stream, {
     headers: {
