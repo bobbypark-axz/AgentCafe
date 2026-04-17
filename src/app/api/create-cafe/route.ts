@@ -4,7 +4,7 @@ import { runLocalPostAgent } from "@/lib/local-agent";
 import { runSandboxPostAgent } from "@/lib/sandbox";
 
 export const runtime = "nodejs";
-export const maxDuration = 600;
+export const maxDuration = 300;
 
 const BodySchema = z.object({
   cafeUrl: z.string().url().refine((u) => /daum\.net/.test(u), {
