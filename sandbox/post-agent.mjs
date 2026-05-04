@@ -18,6 +18,7 @@ import { ToolLoopAgent, stepCountIs } from "ai";
 import { createMCPClient } from "@ai-sdk/mcp";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { anthropic } from "@ai-sdk/anthropic";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 
 function emit(kind, payload) {
   process.stdout.write(
@@ -40,12 +41,38 @@ async function main() {
   if (!SESSION_BLOB_URL) throw new Error("SESSION_BLOB_URL is required");
   if (!CAFE_URL) throw new Error("CAFE_URL is required");
 
-  // Resolve model: direct Anthropic provider if API key available, otherwise AI Gateway
+  // Resolve model. Priority:
+  //   1. BIZROUTER_API_KEY  → BizRouter (OpenAI-compatible Korean router)
+  //   2. ANTHROPIC_API_KEY  → direct Anthropic provider
+  //   3. fallback           → Vercel AI Gateway via plain id string
   function resolveModel(id) {
+    if (process.env.BIZROUTER_API_KEY) {
+      // Use `||` (truthy) instead of `??` because env vars are passed as
+      // empty strings ("") when unset by the caller — which `??` would
+      // accept as a real value and pass through as model: '' to BizRouter
+      // (returning 404 "Model not found").
+      const baseURL =
+        process.env.BIZROUTER_BASE_URL || "https://bizrouter.ai/api/v1";
+      const bizrouter = createOpenAICompatible({
+        name: "bizrouter",
+        apiKey: process.env.BIZROUTER_API_KEY,
+        baseURL,
+      });
+      // BizRouter catalog uses vendor-prefixed slugs verbatim
+      // (e.g. "anthropic/claude-sonnet-4.6"). Don't strip the prefix.
+      const modelId =
+        process.env.BIZROUTER_MODEL_ID ||
+        id ||
+        "anthropic/claude-sonnet-4.6";
+      emit("phase", { message: `using BizRouter: ${baseURL} · ${modelId}` });
+      return bizrouter(modelId);
+    }
     if (process.env.ANTHROPIC_API_KEY) {
       const raw = (id ?? "anthropic/claude-sonnet-4.6").replace(/^anthropic\//, "");
+      emit("phase", { message: `using direct Anthropic: ${raw}` });
       return anthropic(raw.replace(/\./g, "-"));
     }
+    emit("phase", { message: `using AI Gateway: ${id ?? "anthropic/claude-sonnet-4.6"}` });
     return id ?? "anthropic/claude-sonnet-4.6";
   }
 
@@ -60,22 +87,31 @@ async function main() {
   await writeFile(storageStatePath, await res.text(), "utf8");
   emit("phase", { message: "storageState ready" });
 
-  emit("phase", { message: "starting playwright-mcp (headless)" });
+  // When DISPLAY is set (Xvnc running), launch a headed Chromium so
+  // a VNC client can mirror the screen. Otherwise keep the cheap
+  // headless path the sandbox previously relied on.
+  const headed = Boolean(process.env.DISPLAY);
+  emit("phase", {
+    message: headed
+      ? `starting playwright-mcp (headed, DISPLAY=${process.env.DISPLAY})`
+      : "starting playwright-mcp (headless)",
+  });
+  const mcpArgs = [
+    "-y",
+    "@playwright/mcp@latest",
+    "--browser",
+    "chromium",
+    "--storage-state",
+    storageStatePath,
+    "--viewport-size",
+    "1280,800",
+    "--isolated",
+  ];
+  if (!headed) mcpArgs.splice(2, 0, "--headless");
   const mcpClient = await createMCPClient({
     transport: new StdioClientTransport({
       command: "npx",
-      args: [
-        "-y",
-        "@playwright/mcp@latest",
-        "--headless",
-        "--browser",
-        "chromium",
-        "--storage-state",
-        storageStatePath,
-        "--viewport-size",
-        "1280,900",
-        "--isolated",
-      ],
+      args: mcpArgs,
       stderr: "inherit",
       env: Object.fromEntries(
         Object.entries(process.env).filter(([, v]) => v !== undefined),
@@ -136,18 +172,32 @@ STEP 1 — Invent the content (do this in your reasoning, BEFORE calling tools).
                   · NO markdown. Plain text only.
   ${toneGuide}
 
-STEP 1.5 — Login if needed.
+STEP 1.5 — Login check.
   After navigating to the cafe, check if you are logged in (look for "로그인"
   button in the header — if it says "로그인" you are NOT logged in).
   If not logged in:
-  a) browser_navigate to https://accounts.kakao.com/login/?continue=https%3A%2F%2Fwww.daum.net%2F
-  b) browser_snapshot to see the login form.
-  c) Fill in the email field with: ${JSON.stringify(DAUM_EMAIL)}
-  d) Fill in the password field with: ${JSON.stringify(DAUM_PASSWORD)}
-  e) Click the login/submit button.
-  f) Wait for redirect, then browser_snapshot to confirm login success.
-  g) Navigate back to the cafe URL.
-  If DAUM_EMAIL is empty, skip login and report "session expired, no credentials".
+    A. If env vars DAUM_EMAIL and DAUM_PASSWORD are present (the user passed
+       credentials in the form), AUTO-LOG-IN:
+       - Click the "로그인" button to go to logins.daum.net.
+       - On the login page, find the ID/email input (usually labeled "카카오메일 아이디"
+         or "이메일") and type DAUM_EMAIL into it.
+       - Find the password input and type DAUM_PASSWORD into it.
+       - Click the submit button (보통 "로그인" button on the form).
+       - WAIT (browser_wait_for, up to 8 minutes). Two outcomes:
+           a) Page redirects back to cafe.daum.net or daum.net main → success,
+              continue to STEP 2.
+           b) Page shows 2FA / email-verification / captcha:
+              - Emit final text containing "AWAITING_2FA: please complete the
+                challenge in the iframe (a popup is open in your browser).
+                Agent is waiting up to 8 minutes."
+              - DO NOT attempt to fill the 2FA code yourself — you don't have
+                access to the user's email.
+              - Use browser_wait_for with selector="text=로그아웃" or url not
+                containing "logins.daum.net" — this resolves when the user
+                completes the challenge IN THE LIVE IFRAME.
+              - When wait_for resolves, continue to STEP 2.
+    B. If credentials are NOT present, STOP immediately. Emit final text:
+         "SESSION_EXPIRED: please run 세션 로그인 first (or pass DAUM_EMAIL/PASSWORD)."
 
 STEP 2 — Navigate the cafe.
   - browser_navigate to ${CAFE_URL}

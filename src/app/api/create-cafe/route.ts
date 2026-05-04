@@ -1,18 +1,15 @@
 import { z } from "zod";
 import { getDaumSessionBlobUrl } from "@/lib/blob";
-import { runLocalPostAgent } from "@/lib/local-agent";
-import { runSandboxPostAgent } from "@/lib/sandbox";
+import { runCafeAgent } from "@/lib/sandbox";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
 const BodySchema = z.object({
-  cafeUrl: z.string().url().refine((u) => /daum\.net/.test(u), {
-    message: "URL must be a daum.net URL",
-  }),
-  topicHint: z.string().max(200).optional(),
-  length: z.enum(["short", "medium", "long"]).default("medium"),
-  tone: z.string().max(40).optional(),
+  cafeName: z.string().min(2).max(40),
+  cafeDescription: z.string().max(400).optional(),
+  visibility: z.enum(["public", "private"]).default("public"),
+  category: z.string().max(40).optional(),
 });
 
 export async function POST(req: Request) {
@@ -29,6 +26,18 @@ export async function POST(req: Request) {
     );
   }
 
+  // Cafe creation is sandbox-only — there is no local Chromium profile path
+  // for it (the local-agent lib only exposes post + moderate + delete).
+  if (process.env.LOCAL_AGENT === "1") {
+    return Response.json(
+      {
+        error:
+          "cafe creation is not available in LOCAL_AGENT mode; deploy to Vercel or unset LOCAL_AGENT",
+      },
+      { status: 501 },
+    );
+  }
+
   let sessionBlobUrl: string;
   try {
     sessionBlobUrl = await getDaumSessionBlobUrl();
@@ -39,10 +48,10 @@ export async function POST(req: Request) {
     );
   }
 
-  const stream =
-    process.env.LOCAL_AGENT === "1"
-      ? runLocalPostAgent({ ...params, sessionBlobUrl }, req.signal)
-      : runSandboxPostAgent({ ...params, sessionBlobUrl }, req.signal);
+  const stream = runCafeAgent(
+    { ...params, sessionBlobUrl },
+    req.signal,
+  );
 
   return new Response(stream, {
     headers: {

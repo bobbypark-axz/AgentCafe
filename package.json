@@ -8,12 +8,14 @@
     "start": "next start",
     "lint": "eslint",
     "seed": "tsx --env-file=.env.local scripts/seed-session.ts",
+    "login:local": "tsx --env-file=.env.local scripts/login-local.ts",
     "snapshot": "tsx --env-file=.env.local scripts/create-snapshot.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.69",
     "@ai-sdk/gateway": "^3.0.98",
     "@ai-sdk/mcp": "^1.0.36",
+    "@ai-sdk/openai-compatible": "^2.0.41",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@vercel/blob": "^2.3.3",
     "@vercel/sandbox": "^1.10.0",

@@ -1,9 +1,5 @@
-import { CafeForm } from "@/components/cafe-form";
+import { AgentCafeApp } from "@/components/agent-cafe-app";
 
 export default function Home() {
-  return (
-    <main className="min-h-dvh">
-      <CafeForm />
-    </main>
-  );
+  return <AgentCafeApp />;
 }
