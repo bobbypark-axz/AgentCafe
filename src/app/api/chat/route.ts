@@ -1,22 +1,23 @@
 import { z } from "zod";
-import { runLocalModerateAgent } from "@/lib/local-agent";
+import { runLocalChatAgent } from "@/lib/local-agent";
 
 export const runtime = "nodejs";
-export const maxDuration = 300;
+export const maxDuration = 600;
 
 const BodySchema = z.object({
-  cafeUrl: z
-    .string()
-    .url()
-    .refine((u) => /daum\.net/.test(u), {
-      message: "URL must be a daum.net URL",
-    }),
-  boardHint: z.string().max(60).optional(),
-  keywords: z.array(z.string().min(1).max(40)).max(50).default([]),
-  action: z.enum(["3일 정지", "7일 정지", "영구 차단"]).default("3일 정지"),
-  dryRun: z.boolean().default(true),
-  maxPosts: z.number().int().min(1).max(30).default(10),
-  maxActions: z.number().int().min(0).max(20).default(5),
+  message: z.string().min(1).max(4000),
+  cafeUrl: z.string().url().refine((u) => /daum\.net/.test(u), {
+    message: "URL must be a daum.net URL",
+  }),
+  history: z
+    .array(
+      z.object({
+        role: z.enum(["user", "assistant"]),
+        content: z.string().max(8000),
+      }),
+    )
+    .max(20)
+    .optional(),
 });
 
 export async function POST(req: Request) {
@@ -33,7 +34,8 @@ export async function POST(req: Request) {
     );
   }
 
-  const stream = runLocalModerateAgent(params, req.signal);
+  const stream = runLocalChatAgent(params, req.signal);
+
   return new Response(stream, {
     headers: {
       "content-type": "application/x-ndjson; charset=utf-8",

@@ -28,13 +28,6 @@ export async function POST(req: Request) {
     );
   }
 
-  if (process.env.LOCAL_AGENT !== "1") {
-    return Response.json(
-      { error: "delete is local-only for now (set LOCAL_AGENT=1)" },
-      { status: 412 },
-    );
-  }
-
   const stream = runLocalDeleteAgent(params, req.signal);
 
   return new Response(stream, {

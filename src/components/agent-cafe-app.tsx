@@ -1,373 +1,292 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 /* ────────────────── types ────────────────── */
 
-type Mode = "create" | "post" | "moderate";
+type RunStep = {
+  kind: "phase" | "step";
+  message: string;
+  toolsUsed?: string[];
+  stepNumber?: number;
+  t: number;
+};
 
-type AgentState = "form" | "running" | "done" | "expired" | "error";
+type ChatMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  steps: RunStep[];
+  status?: "running" | "done" | "error" | "expired";
+  postUrl?: string | null;
+  errorMessage?: string;
+};
 
-type LogEvent = {
+type StreamEvent = {
   kind: string;
   message?: string;
-  line?: string;
+  text?: string;
+  postUrl?: string | null;
+  url?: string;
   stepNumber?: number;
   finishReason?: string;
   toolsUsed?: string[];
-  tools?: string[];
-  text?: string;
-  summary?: string;
-  postUrl?: string | null;
-  cafeUrl?: string | null;
-  url?: string;
-  author?: string;
-  where?: string;
-  matched?: string[];
-  snippet?: string;
-  reason?: string;
-  action?: string;
-  success?: boolean;
-  inputTokens?: number;
-  outputTokens?: number;
   t?: number;
   [k: string]: unknown;
 };
 
-/* ────────────────── constants ────────────────── */
-
-const MODE_LABELS: Record<Mode, string> = {
-  create: "카페 생성",
-  post: "글 자동 게시",
-  moderate: "모더레이션",
-};
-
-const TOPIC_HINTS = [
-  "새 GPU 후기",
-  "주말 빌드 로그",
-  "맥북 vs 윈도우",
-  "리눅스 입문",
-  "키보드 추천",
+const PROMPT_SUGGESTIONS = [
+  "RTX 5070 후기 글 하나 써줘",
+  "이 카페 가입해줘",
+  "오늘 자유게시판 새 글 보여줘",
+  "[빌드로그] 주말에 7700X + RTX 4060Ti 조립했어요 🙂 이 제목 삭제해줘",
 ];
 
-const MOD_ACTIONS: Array<{
-  value: "3일 정지" | "7일 정지" | "영구 차단";
-  title: string;
-  desc: string;
-}> = [
-  { value: "3일 정지", title: "활동 정지 3일", desc: "가벼운 1차 경고" },
-  { value: "7일 정지", title: "활동 정지 7일", desc: "반복 위반 · 권장" },
-  { value: "영구 차단", title: "영구 차단", desc: "광고/스팸 확정" },
-];
+/* ────────────────── icons ────────────────── */
 
-/* ────────────────── icons (currentColor) ────────────────── */
+type IconProps = { size?: number; color?: string };
 
-function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
-  const path = ICON_PATHS[name];
-  return (
-    <svg className="ic" viewBox="0 0 24 24" width={size} height={size}>
-      {path}
+const Ic = {
+  Logo: ({ size = 36 }: IconProps) => (
+    <svg width={size} height={size} viewBox="0 0 36 36" aria-hidden>
+      <defs>
+        <linearGradient id="ic-logo" x1="0" x2="1" y1="0" y2="1">
+          <stop offset="0%" stopColor="#3182F6" />
+          <stop offset="100%" stopColor="#5B37ED" />
+        </linearGradient>
+      </defs>
+      <rect width="36" height="36" rx="10" fill="url(#ic-logo)" />
+      <text
+        x="50%"
+        y="55%"
+        textAnchor="middle"
+        dominantBaseline="middle"
+        fill="#fff"
+        fontWeight="800"
+        fontSize="16"
+        fontFamily="var(--font-brand)"
+      >
+        A
+      </text>
     </svg>
-  );
-}
-
-type IconName =
-  | "home"
-  | "write"
-  | "shield"
-  | "list"
-  | "sessions"
-  | "setting"
-  | "bell"
-  | "arrow"
-  | "check"
-  | "x"
-  | "warn"
-  | "refresh"
-  | "lock"
-  | "expand"
-  | "sparkle"
-  | "copy";
-
-const ICON_PATHS: Record<IconName, React.ReactNode> = {
-  home: (
-    <path
-      d="M3 11.5L12 4l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1v-8.5z"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      fill="none"
-      strokeLinejoin="round"
-    />
   ),
-  write: (
-    <g stroke="currentColor" strokeWidth="1.6" fill="none" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M4 20h4l11-11-4-4L4 16v4z" />
-      <path d="M14 6l4 4" />
-    </g>
+  Plus: ({ size = 16, color = "currentColor" }: IconProps) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="12" y1="5" x2="12" y2="19" />
+      <line x1="5" y1="12" x2="19" y2="12" />
+    </svg>
   ),
-  shield: (
-    <path
-      d="M12 3l8 3v6c0 4.5-3.4 8.4-8 9-4.6-.6-8-4.5-8-9V6l8-3z"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      fill="none"
-      strokeLinejoin="round"
-    />
+  Send: ({ size = 16, color = "currentColor" }: IconProps) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M22 2 11 13" />
+      <path d="m22 2-7 20-4-9-9-4 20-7z" />
+    </svg>
   ),
-  list: (
-    <g stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
-      <path d="M4 6h16" />
-      <path d="M4 12h16" />
-      <path d="M4 18h10" />
-    </g>
+  ChevronDown: ({ size = 14, color = "currentColor" }: IconProps) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="6 9 12 15 18 9" />
+    </svg>
   ),
-  sessions: (
-    <g stroke="currentColor" strokeWidth="1.6" fill="none" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="3" y="5" width="18" height="14" rx="2" />
-      <path d="M3 9h18" />
-      <circle cx="7" cy="7" r=".6" fill="currentColor" />
-    </g>
+  Edit: ({ size = 13, color = "currentColor" }: IconProps) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+    </svg>
   ),
-  setting: (
-    <g stroke="currentColor" strokeWidth="1.6" fill="none" strokeLinecap="round">
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h0a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v0a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
-    </g>
+  Sparkle: ({ size = 13, color = "currentColor" }: IconProps) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill={color} aria-hidden>
+      <path d="M12 3l1.7 4.6L18 9l-4.3 1.4L12 15l-1.7-4.6L6 9l4.3-1.4L12 3z" />
+    </svg>
   ),
-  bell: (
-    <g stroke="currentColor" strokeWidth="1.6" fill="none" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9z" />
-      <path d="M10 21a2 2 0 0 0 4 0" />
-    </g>
-  ),
-  arrow: (
-    <g stroke="currentColor" strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M5 12h14" />
-      <path d="M13 6l6 6-6 6" />
-    </g>
-  ),
-  check: (
-    <path
-      d="M5 12.5l4.5 4.5L19 7.5"
-      stroke="currentColor"
-      strokeWidth="2.2"
-      fill="none"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
-  ),
-  x: (
-    <g stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+  X: ({ size = 16, color = "currentColor" }: IconProps) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round">
       <path d="M6 6l12 12" />
       <path d="M18 6L6 18" />
-    </g>
+    </svg>
   ),
-  warn: (
-    <g stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 4l10 17H2L12 4z" />
-      <path d="M12 10v5" />
-      <circle cx="12" cy="18" r="0.8" fill="currentColor" />
-    </g>
+  Stop: ({ size = 12, color = "currentColor" }: IconProps) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill={color} aria-hidden>
+      <rect x="6" y="6" width="12" height="12" rx="2" />
+    </svg>
   ),
-  refresh: (
-    <g stroke="currentColor" strokeWidth="1.6" fill="none" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M4 12a8 8 0 0 1 14-5.3L20 9" />
-      <path d="M20 4v5h-5" />
-      <path d="M20 12a8 8 0 0 1-14 5.3L4 15" />
-      <path d="M4 20v-5h5" />
-    </g>
+  Check: ({ size = 13, color = "currentColor" }: IconProps) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
   ),
-  lock: (
-    <g stroke="currentColor" strokeWidth="1.6" fill="none">
-      <rect x="5" y="11" width="14" height="9" rx="2" />
-      <path d="M8 11V8a4 4 0 0 1 8 0v3" />
-    </g>
+  Warn: ({ size = 20, color = "currentColor" }: IconProps) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+      <line x1="12" y1="9" x2="12" y2="13" />
+      <line x1="12" y1="17" x2="12.01" y2="17" />
+    </svg>
   ),
-  expand: (
-    <g stroke="currentColor" strokeWidth="1.6" fill="none" strokeLinecap="round">
-      <path d="M4 9V4h5" />
-      <path d="M20 15v5h-5" />
-      <path d="M4 4l6 6" />
-      <path d="M20 20l-6-6" />
-    </g>
+  Globe: ({ size = 11, color = "currentColor" }: IconProps) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10" />
+      <line x1="2" y1="12" x2="22" y2="12" />
+      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+    </svg>
   ),
-  sparkle: (
-    <g fill="currentColor">
-      <path d="M12 3l1.7 4.6L18 9l-4.3 1.4L12 15l-1.7-4.6L6 9l4.3-1.4L12 3z" />
-    </g>
+  Camera: ({ size = 11, color = "currentColor" }: IconProps) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+      <circle cx="12" cy="13" r="4" />
+    </svg>
   ),
-  copy: (
-    <g stroke="currentColor" strokeWidth="1.5" fill="none">
-      <rect x="8" y="8" width="12" height="12" rx="2" />
-      <path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3" />
-    </g>
+  Mouse: ({ size = 11, color = "currentColor" }: IconProps) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="6" y="2" width="12" height="20" rx="6" />
+      <line x1="12" y1="6" x2="12" y2="10" />
+    </svg>
   ),
+  Type: ({ size = 11, color = "currentColor" }: IconProps) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="4 7 4 4 20 4 20 7" />
+      <line x1="9" y1="20" x2="15" y2="20" />
+      <line x1="12" y1="4" x2="12" y2="20" />
+    </svg>
+  ),
+};
+
+const TOOL_META: Record<string, { icon: keyof typeof Ic; label: string }> = {
+  browser_navigate: { icon: "Globe", label: "페이지 이동" },
+  browser_snapshot: { icon: "Camera", label: "스냅샷" },
+  browser_click: { icon: "Mouse", label: "클릭" },
+  browser_type: { icon: "Type", label: "입력" },
 };
 
 /* ────────────────── root ────────────────── */
 
 export function AgentCafeApp() {
-  const [mode, setMode] = useState<Mode>("post");
-  const [agentState, setAgentState] = useState<AgentState>("form");
-  const [seedOpen, setSeedOpen] = useState(false);
-
-  /* form state — create */
-  const [cafeName, setCafeName] = useState("컴퓨터 메이커 모임");
-  const [cafeDescription, setCafeDescription] = useState(
-    "자작 PC 빌드, 부품 후기, 빌드 로그를 함께 나누는 모임입니다.",
-  );
-  const [category, setCategory] = useState("컴퓨터/IT");
-  const [visibility, setVisibility] = useState<"public" | "private">("public");
-
-  /* form state — post */
   const [cafeUrl, setCafeUrl] = useState("https://cafe.daum.net/computermaker");
-  const [topicHint, setTopicHint] = useState("");
-  const [length, setLength] = useState<"short" | "medium" | "long">("medium");
-  const [tone, setTone] = useState<"friendly" | "neutral" | "casual">("friendly");
-
-  /* form state — moderate */
-  const [boardHint, setBoardHint] = useState("자유게시판, 정보공유");
-  const [keywords, setKeywords] = useState("도배, 광고, 홍보, 무료체험");
-  const [modAction, setModAction] = useState<"3일 정지" | "7일 정지" | "영구 차단">(
-    "7일 정지",
+  const [editOpen, setEditOpen] = useState(false);
+  const [loginOpen, setLoginOpen] = useState(false);
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [sessionReady, setSessionReady] = useState<boolean | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
+  const threadRef = useRef<HTMLDivElement>(null);
+  const [sessionLabel] = useState(() =>
+    new Date().toLocaleTimeString("ko-KR", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }),
   );
-  const [dryRun, setDryRun] = useState(true);
-  const [maxPosts, setMaxPosts] = useState(40);
-  const [maxActions, setMaxActions] = useState(10);
 
-  /* run state */
-  const [events, setEvents] = useState<LogEvent[]>([]);
-  const [finalUrl, setFinalUrl] = useState<string | null>(null);
-  const [viewerUrl, setViewerUrl] = useState<string | null>(null);
-  const [startedAt, setStartedAt] = useState<number | null>(null);
-  const [elapsedMs, setElapsedMs] = useState(0);
-
-  /* Daum login fallback creds (kept in sessionStorage) */
-  const [daumEmail, setDaumEmail] = useState("");
-  const [daumPassword, setDaumPassword] = useState("");
-  // True once the user has either saved creds or explicitly skipped; prevents
-  // the popup from re-arming on every submit.
-  const [daumLoginAsked, setDaumLoginAsked] = useState(false);
-  const [daumLoginOpen, setDaumLoginOpen] = useState(false);
   useEffect(() => {
     if (typeof window === "undefined") return;
-    setDaumEmail(window.sessionStorage.getItem("daum.email") || "");
-    setDaumPassword(window.sessionStorage.getItem("daum.password") || "");
-    setDaumLoginAsked(window.sessionStorage.getItem("daum.asked") === "1");
+    const cached = window.localStorage.getItem("agentcafe.cafeUrl");
+    if (cached) setCafeUrl(cached);
+  }, []);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem("agentcafe.cafeUrl", cafeUrl);
+  }, [cafeUrl]);
+
+  const refreshSession = async () => {
+    try {
+      const r = await fetch("/api/session-status", { cache: "no-store" });
+      const j = (await r.json()) as { ready?: boolean };
+      setSessionReady(Boolean(j.ready));
+    } catch {
+      setSessionReady(false);
+    }
+  };
+  useEffect(() => {
+    void refreshSession();
   }, []);
 
-  const abortRef = useRef<AbortController | null>(null);
-
-  /* derived */
-  const stepCount = useMemo(
-    () => events.filter((e) => e.kind === "step").length,
-    [events],
-  );
-  const violations = useMemo(
-    () => events.filter((e) => e.kind === "violation"),
-    [events],
-  );
-  const actions = useMemo(
-    () => events.filter((e) => e.kind === "action"),
-    [events],
-  );
-  const tokenTotal = useMemo(() => {
-    let n = 0;
-    for (const e of events) {
-      if (typeof e.inputTokens === "number") n += e.inputTokens;
-      if (typeof e.outputTokens === "number") n += e.outputTokens;
-    }
-    return n;
-  }, [events]);
-
-  const sessionState: "active" | "expired" =
-    agentState === "expired" ? "expired" : "active";
-
-  /* elapsed timer */
+  // Show onboarding once on first launch (per-machine via localStorage).
+  // Bump the version when card copy changes so returning users see the
+  // new architecture explanation (Chrome window stays open, etc.).
+  const ONBOARDING_VERSION = "2";
   useEffect(() => {
-    if (agentState !== "running" || startedAt === null) return;
-    const id = setInterval(() => setElapsedMs(Date.now() - startedAt), 1000);
-    return () => clearInterval(id);
-  }, [agentState, startedAt]);
+    if (typeof window === "undefined") return;
+    if (
+      window.localStorage.getItem("agentcafe.onboarded") !== ONBOARDING_VERSION
+    ) {
+      setOnboardingOpen(true);
+    }
+  }, []);
+  const dismissOnboarding = () => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("agentcafe.onboarded", ONBOARDING_VERSION);
+    }
+    setOnboardingOpen(false);
+  };
 
-  /* submit */
-  async function submit() {
-    if (agentState === "running") return;
+  useEffect(() => {
+    const el = threadRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  }, [messages]);
 
-    // Post mode benefits from creds when storageState is expired. If we've
-    // never asked the user this session, pop the login modal first; they can
-    // press "그냥 진행" to skip and rely solely on Blob session.
-    if (mode === "post" && !daumLoginAsked) {
-      setDaumLoginOpen(true);
+  async function send(text?: string) {
+    const message = (text ?? input).trim();
+    if (!message || busy) return;
+
+    if (sessionReady === false) {
+      setLoginOpen(true);
       return;
     }
 
-    setEvents([]);
-    setFinalUrl(null);
-    setViewerUrl(null);
-    setAgentState("running");
-    setStartedAt(Date.now());
-    setElapsedMs(0);
+    const userId =
+      typeof crypto !== "undefined" && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `u-${Date.now()}`;
+    const assistantId =
+      typeof crypto !== "undefined" && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `a-${Date.now()}`;
+
+    const userMsg: ChatMessage = {
+      id: userId,
+      role: "user",
+      content: message,
+      steps: [],
+    };
+    const assistantMsg: ChatMessage = {
+      id: assistantId,
+      role: "assistant",
+      content: "",
+      steps: [],
+      status: "running",
+    };
+
+    const history = messages.map((m) => ({ role: m.role, content: m.content }));
+
+    setMessages((m) => [...m, userMsg, assistantMsg]);
+    setInput("");
+    setBusy(true);
 
     const ac = new AbortController();
     abortRef.current = ac;
 
-    const endpoint =
-      mode === "create"
-        ? "/api/create-cafe"
-        : mode === "post"
-          ? "/api/post"
-          : "/api/moderate";
-
-    const body =
-      mode === "create"
-        ? {
-            cafeName,
-            cafeDescription: cafeDescription || undefined,
-            visibility,
-            category: category || undefined,
-          }
-        : mode === "post"
-          ? {
-              cafeUrl,
-              topicHint: topicHint || undefined,
-              length,
-              tone,
-              daumEmail: daumEmail || undefined,
-              daumPassword: daumPassword || undefined,
-            }
-          : {
-              cafeUrl,
-              boardHint: boardHint || undefined,
-              keywords: keywords
-                .split(/[,\n]/)
-                .map((s) => s.trim())
-                .filter(Boolean),
-              action: modAction,
-              dryRun,
-              maxPosts,
-              maxActions,
-            };
+    const updateAssistant = (mut: (msg: ChatMessage) => ChatMessage) => {
+      setMessages((m) => m.map((x) => (x.id === assistantId ? mut(x) : x)));
+    };
 
     try {
-      const res = await fetch(endpoint, {
+      const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ message, cafeUrl, history }),
         signal: ac.signal,
       });
 
       if (!res.ok || !res.body) {
-        const text = await res.text().catch(() => "");
-        setEvents((xs) => [
-          ...xs,
-          {
-            kind: "error",
-            message: `${res.status} ${res.statusText} ${text}`,
-            t: Date.now(),
-          },
-        ]);
-        setAgentState("error");
+        const txt = await res.text().catch(() => "");
+        updateAssistant((x) => ({
+          ...x,
+          status: "error",
+          errorMessage: `${res.status} ${res.statusText} ${txt}`,
+        }));
         return;
       }
 
@@ -375,7 +294,8 @@ export function AgentCafeApp() {
       const decoder = new TextDecoder();
       let buf = "";
       let sawDone = false;
-      let sawSessionExpired = false;
+      let sawAwaitingLogin = false;
+      let sawError = false;
 
       while (true) {
         const { value, done } = await reader.read();
@@ -387,154 +307,141 @@ export function AgentCafeApp() {
           buf = buf.slice(i + 1);
           if (!line) continue;
           try {
-            const ev = JSON.parse(line) as LogEvent;
-            if (typeof ev.t !== "number") ev.t = Date.now();
-            setEvents((xs) => [...xs, ev]);
+            const ev = JSON.parse(line) as StreamEvent;
+            const t = typeof ev.t === "number" ? ev.t : Date.now();
 
-            if (ev.kind === "viewer" && typeof ev.url === "string") {
-              setViewerUrl(ev.url);
-            }
-            if (ev.kind === "done") {
+            if (ev.kind === "chunk" && typeof ev.text === "string") {
+              const text = ev.text;
+              updateAssistant((x) => ({ ...x, content: x.content + text }));
+              if (text.includes("AWAITING_LOGIN")) sawAwaitingLogin = true;
+            } else if (ev.kind === "done") {
               sawDone = true;
               const u =
-                (typeof ev.postUrl === "string" && ev.postUrl) ||
-                (typeof ev.cafeUrl === "string" && ev.cafeUrl) ||
-                null;
-              if (u) setFinalUrl(u);
+                (typeof ev.postUrl === "string" && ev.postUrl) || null;
+              updateAssistant((x) => ({ ...x, postUrl: u }));
+            } else if (ev.kind === "error") {
+              sawError = true;
+              const msg = String(ev.message ?? "");
+              if (msg.startsWith("AWAITING_LOGIN")) sawAwaitingLogin = true;
+              updateAssistant((x) => ({ ...x, errorMessage: msg }));
+            } else if (ev.kind === "phase" || ev.kind === "step") {
+              const message = String(ev.message ?? "");
+              const toolsUsed = ev.toolsUsed ?? [];
+              updateAssistant((x) => ({
+                ...x,
+                steps: [
+                  ...x.steps,
+                  {
+                    kind: ev.kind as "phase" | "step",
+                    message,
+                    toolsUsed,
+                    stepNumber: ev.stepNumber,
+                    t,
+                  },
+                ],
+              }));
             }
-            const text = String(ev.text ?? ev.summary ?? ev.message ?? "");
-            if (text.includes("SESSION_EXPIRED")) sawSessionExpired = true;
           } catch {
-            setEvents((xs) => [...xs, { kind: "log", line, t: Date.now() }]);
+            /* ignore */
           }
         }
       }
 
-      if (sawSessionExpired) setAgentState("expired");
-      else if (sawDone) setAgentState("done");
-      else setAgentState("error");
+      const finalStatus: ChatMessage["status"] = sawAwaitingLogin
+        ? "expired"
+        : sawDone && !sawError
+          ? "done"
+          : "error";
+      updateAssistant((x) => ({ ...x, status: finalStatus }));
+      if (sawAwaitingLogin) {
+        setSessionReady(false);
+        setLoginOpen(true);
+      }
     } catch (err) {
       if ((err as Error).name === "AbortError") {
-        setAgentState("form");
+        updateAssistant((x) => ({
+          ...x,
+          status: "error",
+          content: x.content + "\n\n[취소됨]",
+        }));
         return;
       }
-      setEvents((xs) => [
-        ...xs,
-        { kind: "error", message: (err as Error).message, t: Date.now() },
-      ]);
-      setAgentState("error");
+      updateAssistant((x) => ({
+        ...x,
+        status: "error",
+        errorMessage: (err as Error).message,
+      }));
     } finally {
+      setBusy(false);
       abortRef.current = null;
     }
   }
 
-  function cancel() {
+  function newConversation() {
     abortRef.current?.abort();
-  }
-
-  function reset() {
-    abortRef.current?.abort();
-    setEvents([]);
-    setFinalUrl(null);
-    setViewerUrl(null);
-    setStartedAt(null);
-    setElapsedMs(0);
-    setAgentState("form");
+    setMessages([]);
+    setInput("");
+    setBusy(false);
   }
 
   return (
     <div className="app">
       <Sidebar
-        mode={mode}
-        setMode={setMode}
-        sessionState={sessionState}
-        onOpenDaumLogin={() => setDaumLoginOpen(true)}
+        cafeUrl={cafeUrl}
+        onEditCafe={() => setEditOpen(true)}
+        onNewConversation={newConversation}
+        hasMessages={messages.length > 0}
+        sessionReady={sessionReady}
+        onOpenLogin={() => setLoginOpen(true)}
+        onOpenHelp={() => setOnboardingOpen(true)}
       />
-      <div className="main">
-        <Topbar mode={mode} agentState={agentState} onReset={reset} />
-        {agentState === "form" ? (
-          <FormView
-            mode={mode}
-            setMode={setMode}
-            cafeName={cafeName}
-            setCafeName={setCafeName}
-            cafeDescription={cafeDescription}
-            setCafeDescription={setCafeDescription}
-            category={category}
-            setCategory={setCategory}
-            visibility={visibility}
-            setVisibility={setVisibility}
-            cafeUrl={cafeUrl}
-            setCafeUrl={setCafeUrl}
-            topicHint={topicHint}
-            setTopicHint={setTopicHint}
-            length={length}
-            setLength={setLength}
-            tone={tone}
-            setTone={setTone}
-            boardHint={boardHint}
-            setBoardHint={setBoardHint}
-            keywords={keywords}
-            setKeywords={setKeywords}
-            modAction={modAction}
-            setModAction={setModAction}
-            dryRun={dryRun}
-            setDryRun={setDryRun}
-            maxPosts={maxPosts}
-            setMaxPosts={setMaxPosts}
-            maxActions={maxActions}
-            setMaxActions={setMaxActions}
-            onRun={submit}
-            onSeedClick={() => setSeedOpen(true)}
-          />
+      <main className="toss-main">
+        <header className="toss-header">
+          <span className="crumb">대화</span>
+          <span className="session">session · {sessionLabel}</span>
+          <span className="meta">모델 · claude-sonnet-4.6</span>
+        </header>
+
+        {messages.length === 0 ? (
+          <Empty cafeUrl={cafeUrl} onPick={(t) => send(t)} />
         ) : (
-          <RunView
-            mode={mode}
-            agentState={agentState}
-            events={events}
-            stepCount={stepCount}
-            elapsedMs={elapsedMs}
-            tokenTotal={tokenTotal}
-            violations={violations}
-            actions={actions}
-            viewerUrl={viewerUrl}
-            finalUrl={finalUrl}
-            cafeUrl={cafeUrl}
-            cafeName={cafeName}
-            dryRun={dryRun}
-            onReset={reset}
-            onCancel={cancel}
-          />
+          <div className="toss-thread" ref={threadRef}>
+            <div className="toss-thread-inner">
+              {messages.map((m) => (
+                <MessageView key={m.id} msg={m} />
+              ))}
+            </div>
+          </div>
         )}
-      </div>
-      {seedOpen && <SeedModal onClose={() => setSeedOpen(false)} />}
-      {daumLoginOpen && (
-        <DaumLoginModal
-          initialEmail={daumEmail}
-          initialPassword={daumPassword}
-          onClose={() => setDaumLoginOpen(false)}
-          onSave={(email, password, runNow) => {
-            setDaumEmail(email);
-            setDaumPassword(password);
-            setDaumLoginAsked(true);
-            if (typeof window !== "undefined") {
-              window.sessionStorage.setItem("daum.email", email);
-              window.sessionStorage.setItem("daum.password", password);
-              window.sessionStorage.setItem("daum.asked", "1");
-            }
-            setDaumLoginOpen(false);
-            if (runNow) setTimeout(submit, 0);
-          }}
-          onSkip={() => {
-            setDaumLoginAsked(true);
-            if (typeof window !== "undefined") {
-              window.sessionStorage.setItem("daum.asked", "1");
-            }
-            setDaumLoginOpen(false);
-            setTimeout(submit, 0);
+
+        <Composer
+          value={input}
+          onChange={setInput}
+          onSend={() => send()}
+          disabled={busy}
+        />
+      </main>
+
+      {editOpen && (
+        <EditCafeUrlModal
+          initial={cafeUrl}
+          onClose={() => setEditOpen(false)}
+          onSave={(v) => {
+            setCafeUrl(v);
+            setEditOpen(false);
           }}
         />
       )}
+      {loginOpen && (
+        <DaumLoginModal
+          onClose={() => setLoginOpen(false)}
+          onSuccess={() => {
+            setLoginOpen(false);
+            void refreshSession();
+          }}
+        />
+      )}
+      {onboardingOpen && <OnboardingModal onClose={dismissOnboarding} />}
     </div>
   );
 }
@@ -542,1118 +449,522 @@ export function AgentCafeApp() {
 /* ────────────────── sidebar ────────────────── */
 
 function Sidebar({
-  mode,
-  setMode,
-  sessionState,
-  onOpenDaumLogin,
+  cafeUrl,
+  onEditCafe,
+  onNewConversation,
+  hasMessages,
+  sessionReady,
+  onOpenLogin,
+  onOpenHelp,
 }: {
-  mode: Mode;
-  setMode: (m: Mode) => void;
-  sessionState: "active" | "expired";
-  onOpenDaumLogin?: () => void;
+  cafeUrl: string;
+  onEditCafe: () => void;
+  onNewConversation: () => void;
+  hasMessages: boolean;
+  sessionReady: boolean | null;
+  onOpenLogin: () => void;
+  onOpenHelp: () => void;
 }) {
+  const cafeShort = cafeUrl.replace(/^https?:\/\//, "").split("?")[0];
   return (
     <aside className="side">
       <div className="brand">
-        <div className="brand-mark">A</div>
-        <div className="brand-name">AgentCafe</div>
-        <span className="brand-tag">v0.1</span>
-      </div>
-
-      <div className="side-cat">에이전트</div>
-      <button
-        type="button"
-        className={`side-item ${mode === "create" ? "active" : ""}`}
-        onClick={() => setMode("create")}
-      >
-        <Icon name="home" /> 카페 생성
-      </button>
-      <button
-        type="button"
-        className={`side-item ${mode === "post" ? "active" : ""}`}
-        onClick={() => setMode("post")}
-      >
-        <Icon name="write" /> 글 자동 게시
-      </button>
-      <button
-        type="button"
-        className={`side-item ${mode === "moderate" ? "active" : ""}`}
-        onClick={() => setMode("moderate")}
-      >
-        <Icon name="shield" /> 모더레이션
-      </button>
-
-      <div className="side-cat">기록</div>
-      <button type="button" className="side-item" disabled>
-        <Icon name="list" /> 실행 이력
-      </button>
-      <button type="button" className="side-item" disabled>
-        <Icon name="sessions" /> 세션 관리
-      </button>
-
-      <div className="side-cat">설정</div>
-      <button
-        type="button"
-        className="side-item"
-        onClick={() => onOpenDaumLogin?.()}
-      >
-        <Icon name="lock" /> Daum 계정
-      </button>
-      <button type="button" className="side-item" disabled>
-        <Icon name="setting" /> 환경설정
-      </button>
-
-      <div className="side-footer">
-        <div className="session-chip" data-state={sessionState}>
-          <div className="session-dot" />
-          <div className="session-meta">
-            <div className="session-l">
-              {sessionState === "expired" ? "세션 만료됨" : "다음 세션 활성"}
-            </div>
-            <div className="session-s">
-              {sessionState === "expired"
-                ? "재시드 필요"
-                : "storageState 캐시됨"}
-            </div>
-          </div>
+        <Ic.Logo size={36} />
+        <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.1 }}>
+          <span className="brand-name">AgentCafe</span>
+          <span className="brand-tag">v0.2 · beta</span>
         </div>
       </div>
+
+      <button
+        type="button"
+        className="toss-new-chat"
+        onClick={onNewConversation}
+        disabled={!hasMessages}
+      >
+        <Ic.Plus size={16} /> 새 대화
+      </button>
+
+      <div className="toss-section-label">로그인</div>
+      <div className="toss-pill">
+        <span className={`dot ${sessionReady ? "green" : "blue"}`} />
+        <div className="meta">
+          <span className="l">
+            {sessionReady ? "Daum 로그인됨" : "Daum 로그인 필요"}
+          </span>
+          <span className="s">cafe.daum.net</span>
+        </div>
+        <button type="button" className="chip" onClick={onOpenLogin}>
+          {sessionReady ? "재로그인" : "로그인"}
+        </button>
+      </div>
+
+      <div className="toss-section-label">현재 카페</div>
+      <button type="button" className="toss-cafe-pill" onClick={onEditCafe} title={cafeUrl}>
+        <span className="dot" />
+        <span className="url">{cafeShort}</span>
+        <span className="icon">
+          <Ic.Edit size={13} />
+        </span>
+      </button>
+
+      <div className="toss-mode-card">
+        <div className="av">N</div>
+        <div className="meta">
+          <span className="l">로컬 모드</span>
+          <span className="s">~/.agent-cafe-profile</span>
+        </div>
+      </div>
+
+      <button
+        type="button"
+        className="toss-help-btn"
+        onClick={onOpenHelp}
+        title="사용법 다시 보기"
+      >
+        <span className="qm">?</span>
+        <span>사용법</span>
+      </button>
     </aside>
   );
 }
 
-/* ────────────────── topbar ────────────────── */
+/* ────────────────── empty state ────────────────── */
 
-function Topbar({
-  mode,
-  agentState,
-  onReset,
+function Empty({
+  cafeUrl,
+  onPick,
 }: {
-  mode: Mode;
-  agentState: AgentState;
-  onReset: () => void;
-}) {
-  return (
-    <div className="topbar">
-      <div className="crumbs">
-        에이전트 · <strong>{MODE_LABELS[mode]}</strong>
-        {agentState === "running" && (
-          <>
-            <span style={{ opacity: 0.5 }}>›</span>
-            <span style={{ color: "var(--semantic-primary-normal)", fontWeight: 600 }}>
-              실행 중
-            </span>
-          </>
-        )}
-        {agentState === "done" && (
-          <>
-            <span style={{ opacity: 0.5 }}>›</span>
-            <span style={{ color: "var(--atomic-green-40)", fontWeight: 600 }}>
-              완료
-            </span>
-          </>
-        )}
-        {agentState === "expired" && (
-          <>
-            <span style={{ opacity: 0.5 }}>›</span>
-            <span style={{ color: "var(--atomic-orange-39)", fontWeight: 600 }}>
-              세션 만료
-            </span>
-          </>
-        )}
-        {agentState === "error" && (
-          <>
-            <span style={{ opacity: 0.5 }}>›</span>
-            <span style={{ color: "var(--atomic-red-40)", fontWeight: 600 }}>
-              오류
-            </span>
-          </>
-        )}
-      </div>
-      <div className="top-actions">
-        {agentState !== "form" && (
-          <button className="btn btn-ghost btn-sm" type="button" onClick={onReset}>
-            <Icon name="refresh" size={14} /> 새 작업
-          </button>
-        )}
-        <button type="button" className="icon-btn">
-          <Icon name="bell" />
-        </button>
-        <div className="avatar">박</div>
-      </div>
-    </div>
-  );
-}
-
-/* ────────────────── form view ────────────────── */
-
-type FormProps = {
-  mode: Mode;
-  setMode: (m: Mode) => void;
-  cafeName: string;
-  setCafeName: (v: string) => void;
-  cafeDescription: string;
-  setCafeDescription: (v: string) => void;
-  category: string;
-  setCategory: (v: string) => void;
-  visibility: "public" | "private";
-  setVisibility: (v: "public" | "private") => void;
   cafeUrl: string;
-  setCafeUrl: (v: string) => void;
-  topicHint: string;
-  setTopicHint: (v: string) => void;
-  length: "short" | "medium" | "long";
-  setLength: (v: "short" | "medium" | "long") => void;
-  tone: "friendly" | "neutral" | "casual";
-  setTone: (v: "friendly" | "neutral" | "casual") => void;
-  boardHint: string;
-  setBoardHint: (v: string) => void;
-  keywords: string;
-  setKeywords: (v: string) => void;
-  modAction: "3일 정지" | "7일 정지" | "영구 차단";
-  setModAction: (v: "3일 정지" | "7일 정지" | "영구 차단") => void;
-  dryRun: boolean;
-  setDryRun: (v: boolean) => void;
-  maxPosts: number;
-  setMaxPosts: (v: number) => void;
-  maxActions: number;
-  setMaxActions: (v: number) => void;
-  onRun: () => void;
-  onSeedClick: () => void;
-};
-
-function FormView(props: FormProps) {
-  const { mode, setMode, onRun, onSeedClick } = props;
-
-  return (
-    <div className="content">
-      <div className="page-head">
-        <div className="page-title">에이전트에게 시킬 작업</div>
-        <div className="page-sub">
-          Claude가 다음 카페 UI를 직접 조작합니다 · 본인 계정의 정상 이용 범위
-          내에서만 사용하세요.
-        </div>
-      </div>
-
-      <div className="seed-banner">
-        <span className="seed-ic">
-          <Icon name="sparkle" size={20} />
-        </span>
-        <div style={{ flex: 1 }}>
-          다음 로그인 세션이 <code>sessions/daum-storage-state.json</code>에
-          저장돼 있어요. 세션이 만료되면 로컬에서 <code>npm run seed</code>로
-          재발급하세요.
-        </div>
-        <button type="button" className="btn btn-ghost btn-sm" onClick={onSeedClick}>
-          시드 안내 보기
-        </button>
-      </div>
-
-      <div className="tabs" role="tablist">
-        <button
-          type="button"
-          className={`tab ${mode === "create" ? "active" : ""}`}
-          onClick={() => setMode("create")}
-        >
-          <Icon name="home" size={16} /> 카페 생성
-        </button>
-        <button
-          type="button"
-          className={`tab ${mode === "post" ? "active" : ""}`}
-          onClick={() => setMode("post")}
-        >
-          <Icon name="write" size={16} /> 글 자동 게시
-        </button>
-        <button
-          type="button"
-          className={`tab ${mode === "moderate" ? "active" : ""}`}
-          onClick={() => setMode("moderate")}
-        >
-          <Icon name="shield" size={16} /> 모더레이션
-        </button>
-      </div>
-
-      <div className="card form-card">
-        <div className="form-grid">
-          {mode === "create" && <CreateFields {...props} />}
-          {mode === "post" && <PostFields {...props} />}
-          {mode === "moderate" && <ModerateFields {...props} />}
-        </div>
-
-        <div className="form-foot">
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={onRun}
-            disabled={
-              (mode === "create" && !props.cafeName.trim()) ||
-              (mode !== "create" && !props.cafeUrl.trim()) ||
-              (mode === "moderate" && props.keywords.trim().length === 0)
-            }
-          >
-            {mode === "create" && "카페 만들기"}
-            {mode === "post" && "글 자동 게시"}
-            {mode === "moderate" && (props.dryRun ? "Dry-run으로 검토" : "Live 모드로 실행")}
-            <Icon name="arrow" size={16} />
-          </button>
-          <div className="legal-note">
-            카카오 약관에 따라 본인 계정의 일반적인 이용 범위 내에서만 자동화가
-            허용됩니다. 대량 생성 · 광고 도배는 금지.
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function CreateFields(p: FormProps) {
-  return (
-    <>
-      <div className="form-row">
-        <div className="form-label">
-          카페 이름<span className="req">*</span>
-          <div className="form-help">8~20자, 한글/영문 가능</div>
-        </div>
-        <input
-          className="text-input"
-          value={p.cafeName}
-          onChange={(e) => p.setCafeName(e.target.value)}
-          placeholder="예: 주말 PC 빌드 클럽"
-          maxLength={40}
-        />
-      </div>
-      <div className="form-row">
-        <div className="form-label">
-          카페 소개
-          <div className="form-help">어떤 카페인지 1~2문장</div>
-        </div>
-        <textarea
-          className="textarea-input"
-          value={p.cafeDescription}
-          onChange={(e) => p.setCafeDescription(e.target.value)}
-          maxLength={400}
-        />
-      </div>
-      <div className="form-row">
-        <div className="form-label">카테고리</div>
-        <select
-          className="select-input"
-          value={p.category}
-          onChange={(e) => p.setCategory(e.target.value)}
-        >
-          <option>컴퓨터/IT</option>
-          <option>취미</option>
-          <option>스포츠/레저</option>
-          <option>학문/교육</option>
-          <option>문화/엔터테인먼트</option>
-        </select>
-      </div>
-      <div className="form-row">
-        <div className="form-label">공개 여부</div>
-        <div className="seg">
-          <button
-            type="button"
-            className={`seg-opt ${p.visibility === "public" ? "on" : ""}`}
-            onClick={() => p.setVisibility("public")}
-          >
-            공개
-          </button>
-          <button
-            type="button"
-            className={`seg-opt ${p.visibility === "private" ? "on" : ""}`}
-            onClick={() => p.setVisibility("private")}
-          >
-            비공개
-          </button>
-        </div>
-      </div>
-    </>
-  );
-}
-
-function PostFields(p: FormProps) {
-  return (
-    <>
-      <div className="form-row">
-        <div className="form-label">
-          카페 URL<span className="req">*</span>
-        </div>
-        <input
-          className="text-input"
-          type="url"
-          value={p.cafeUrl}
-          onChange={(e) => p.setCafeUrl(e.target.value)}
-          autoComplete="off"
-          spellCheck={false}
-        />
-      </div>
-      <div className="form-row">
-        <div className="form-label">
-          주제 힌트
-          <div className="form-help">비워두면 게시판 분위기에 맞춰 알아서 정해요</div>
-        </div>
-        <div>
-          <input
-            className="text-input"
-            value={p.topicHint}
-            onChange={(e) => p.setTopicHint(e.target.value)}
-            placeholder="예: RTX 5090 첫 인상, 주말 빌드 후기"
-            maxLength={200}
-          />
-          <div className="hint-chips">
-            {TOPIC_HINTS.map((h) => (
-              <button
-                type="button"
-                key={h}
-                className="hint-chip"
-                onClick={() => p.setTopicHint(h)}
-              >
-                + {h}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-      <div className="form-row">
-        <div className="form-label">글 길이</div>
-        <div className="seg">
-          {(
-            [
-              ["short", "짧게 · 200자"],
-              ["medium", "보통 · 450자"],
-              ["long", "길게 · 750자"],
-            ] as const
-          ).map(([v, label]) => (
-            <button
-              type="button"
-              key={v}
-              className={`seg-opt ${p.length === v ? "on" : ""}`}
-              onClick={() => p.setLength(v)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="form-row">
-        <div className="form-label">말투</div>
-        <div className="seg">
-          {(
-            [
-              ["friendly", "친근하게 (~요/네요)"],
-              ["neutral", "담백하게"],
-              ["casual", "가볍게 (반말 X)"],
-            ] as const
-          ).map(([v, label]) => (
-            <button
-              type="button"
-              key={v}
-              className={`seg-opt ${p.tone === v ? "on" : ""}`}
-              onClick={() => p.setTone(v)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
-    </>
-  );
-}
-
-function ModerateFields(p: FormProps) {
-  return (
-    <>
-      <div className="form-row">
-        <div className="form-label">
-          카페 URL<span className="req">*</span>
-        </div>
-        <input
-          className="text-input"
-          type="url"
-          value={p.cafeUrl}
-          onChange={(e) => p.setCafeUrl(e.target.value)}
-          autoComplete="off"
-          spellCheck={false}
-        />
-      </div>
-      <div className="form-row">
-        <div className="form-label">
-          대상 게시판
-          <div className="form-help">비우면 자유게시판 + 최근 N개</div>
-        </div>
-        <input
-          className="text-input"
-          value={p.boardHint}
-          onChange={(e) => p.setBoardHint(e.target.value)}
-          placeholder="자유게시판, 정보공유"
-          maxLength={60}
-        />
-      </div>
-      <div className="form-row">
-        <div className="form-label">
-          차단 키워드<span className="req">*</span>
-          <div className="form-help">쉼표 또는 줄바꿈으로 구분</div>
-        </div>
-        <textarea
-          className="textarea-input"
-          value={p.keywords}
-          onChange={(e) => p.setKeywords(e.target.value)}
-        />
-      </div>
-      <div className="form-row">
-        <div className="form-label">제재 액션</div>
-        <div className="radio-grid">
-          {MOD_ACTIONS.map((a) => (
-            <button
-              type="button"
-              key={a.value}
-              className={`radio-card ${p.modAction === a.value ? "on" : ""}`}
-              onClick={() => p.setModAction(a.value)}
-            >
-              <div className="rc-h">
-                {a.title}
-                <span className="rc-dot" />
-              </div>
-              <div className="rc-d">{a.desc}</div>
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="form-row">
-        <div className="form-label">실행 모드</div>
-        <button
-          type="button"
-          className="toggle-row"
-          onClick={() => p.setDryRun(!p.dryRun)}
-          style={{ cursor: "pointer", textAlign: "left" }}
-        >
-          <div className="tx">
-            <div className="tx-h">Dry-run으로 먼저 검토</div>
-            <div className="tx-d">
-              제재는 안 하고 위반 후보만 보고해요. 사람이 확인 후 live로 실행
-              가능
-            </div>
-          </div>
-          <span className={`sw ${p.dryRun ? "on" : ""}`} />
-        </button>
-      </div>
-      <div className="form-row">
-        <div className="form-label">
-          상한
-          <div className="form-help">스캔/액션 횟수 안전장치</div>
-        </div>
-        <div style={{ display: "flex", gap: 10 }}>
-          <div className="input-with-prefix" style={{ flex: 1 }}>
-            <span className="input-prefix">스캔</span>
-            <input
-              className="text-input"
-              type="number"
-              min={1}
-              max={100}
-              value={p.maxPosts}
-              onChange={(e) =>
-                p.setMaxPosts(Math.max(1, Math.min(100, Number(e.target.value) || 1)))
-              }
-            />
-          </div>
-          <div className="input-with-prefix" style={{ flex: 1 }}>
-            <span className="input-prefix">액션</span>
-            <input
-              className="text-input"
-              type="number"
-              min={0}
-              max={50}
-              value={p.maxActions}
-              disabled={p.dryRun}
-              onChange={(e) =>
-                p.setMaxActions(Math.max(0, Math.min(50, Number(e.target.value) || 0)))
-              }
-            />
-          </div>
-        </div>
-      </div>
-    </>
-  );
-}
-
-/* ────────────────── run view ────────────────── */
-
-function RunView(props: {
-  mode: Mode;
-  agentState: AgentState;
-  events: LogEvent[];
-  stepCount: number;
-  elapsedMs: number;
-  tokenTotal: number;
-  violations: LogEvent[];
-  actions: LogEvent[];
-  viewerUrl: string | null;
-  finalUrl: string | null;
-  cafeUrl: string;
-  cafeName: string;
-  dryRun: boolean;
-  onReset: () => void;
-  onCancel: () => void;
+  onPick: (text: string) => void;
 }) {
-  const {
-    mode,
-    agentState,
-    events,
-    stepCount,
-    elapsedMs,
-    tokenTotal,
-    violations,
-    actions,
-    viewerUrl,
-    finalUrl,
-    cafeUrl,
-    cafeName,
-    dryRun,
-    onReset,
-    onCancel,
-  } = props;
-
-  const elapsedSec = Math.round(elapsedMs / 1000);
-  const actionFails = actions.filter((a) => a.success === false).length;
-  const actionSuccess = actions.length - actionFails;
-
+  const cafeShort = cafeUrl.replace(/^https?:\/\/cafe\.daum\.net\//, "");
   return (
-    <div className="content">
-      {agentState === "done" && (
-        <div className="state-banner success">
-          <div className="state-icon">
-            <Icon name="check" size={28} />
-          </div>
-          <div className="state-h">
-            <div className="state-t">
-              {mode === "create" && "카페가 만들어졌어요"}
-              {mode === "post" && "글이 정상 게시되었어요"}
-              {mode === "moderate" &&
-                `모더레이션 완료 · ${violations.length}건 감지 · ${actionSuccess}건 처리`}
-            </div>
-            <div className="state-d">
-              {mode === "post" && `소요 시간 ${elapsedSec}초 · ${stepCount}단계`}
-              {mode === "create" && `소요 시간 ${elapsedSec}초 · ${stepCount}단계`}
-              {mode === "moderate" &&
-                `위반 ${violations.length}건 · 액션 ${actionSuccess}건 성공${
-                  actionFails > 0 ? ` / ${actionFails}건 실패` : ""
-                }`}
-            </div>
-            {finalUrl && (
-              <a className="state-link" href={finalUrl} target="_blank" rel="noreferrer">
-                {finalUrl}
-                <Icon name="copy" size={12} />
-              </a>
-            )}
-          </div>
-          <div className="state-actions">
-            <button type="button" className="btn btn-out" onClick={onReset}>
-              닫기
-            </button>
-          </div>
-        </div>
-      )}
-
-      {agentState === "expired" && (
-        <div className="state-banner expired">
-          <div className="state-icon">
-            <Icon name="warn" size={28} />
-          </div>
-          <div className="state-h">
-            <div className="state-t">다음 세션이 만료되었어요</div>
-            <div className="state-d">
-              로그인 쿠키가 더 이상 유효하지 않아 에이전트를 진행할 수
-              없습니다. 로컬 머신에서{" "}
-              <code className="mono" style={{
-                padding: "1px 6px",
-                background: "var(--semantic-fill-alternative)",
-                borderRadius: 4,
-              }}>
-                npm run seed
-              </code>{" "}
-              로 새 세션을 발급한 뒤 다시 시도해주세요.
-            </div>
-          </div>
-          <div className="state-actions">
-            <button type="button" className="btn btn-primary" onClick={onReset}>
-              다시 시도
-            </button>
-          </div>
-        </div>
-      )}
-
-      {agentState === "error" && (
-        <div className="state-banner error">
-          <div className="state-icon">
-            <Icon name="x" size={28} />
-          </div>
-          <div className="state-h">
-            <div className="state-t">에이전트가 중단됐어요</div>
-            <div className="state-d">
-              다음 카페 UI가 변경되었거나 일시적인 셀렉터 미일치일 수 있어요.
-              아래 로그를 확인하고 다시 시도해보세요.
-            </div>
-          </div>
-          <div className="state-actions">
-            <button type="button" className="btn btn-primary" onClick={onReset}>
-              새 작업
-            </button>
-          </div>
-        </div>
-      )}
-
-      <div className="page-head">
-        <div className="page-title">
-          {mode === "create" && (agentState === "running" ? "카페 생성 중" : "카페 생성")}
-          {mode === "post" && (agentState === "running" ? "글 자동 게시 중" : "글 자동 게시")}
-          {mode === "moderate" &&
-            (agentState === "running" ? "모더레이션 실행 중" : "모더레이션")}
-          {agentState === "running" && (
-            <span className="running-pill">● 실행 중</span>
-          )}
-        </div>
-        <div className="page-sub">
-          {mode === "post" && cafeUrl}
-          {mode === "create" && `${cafeName}`}
-          {mode === "moderate" && `${cafeUrl} · ${dryRun ? "Dry-run" : "Live"}`}
-        </div>
+    <div className="toss-empty">
+      <div className="toss-empty-title">무엇을 도와드릴까요?</div>
+      <div className="toss-empty-sub">
+        <span className="toss-mono blue">cafe.daum.net/{cafeShort}</span>
+        <span> 에서 글 쓰기·삭제·관리·조회를 자연어로 시키면 Claude가 직접 처리합니다.</span>
       </div>
-
-      <div className="metrics-row">
-        <div className="metric accent">
-          <div className="metric-l">단계</div>
-          <div className="metric-n">
-            {stepCount}
-            <span style={{ fontSize: 14, color: "var(--semantic-label-alternative)", fontWeight: 500 }}>
-              {" "}/ 50
-            </span>
-          </div>
-          <div className="metric-d">stopWhen=stepCountIs(50)</div>
-        </div>
-        <div className="metric">
-          <div className="metric-l">경과 시간</div>
-          <div className="metric-n">
-            {elapsedSec}
-            <span style={{ fontSize: 14, color: "var(--semantic-label-alternative)", fontWeight: 500 }}>
-              s
-            </span>
-          </div>
-          <div className="metric-d">목표 ≤ 90s</div>
-        </div>
-        {mode === "moderate" ? (
-          <>
-            <div className="metric warn">
-              <div className="metric-l">감지된 위반</div>
-              <div className="metric-n">{violations.length}</div>
-              <div className="metric-d">실시간 누적</div>
-            </div>
-            <div className="metric danger">
-              <div className="metric-l">실행된 제재</div>
-              <div className="metric-n">
-                {actionSuccess}
-                <span style={{ fontSize: 14, color: "var(--semantic-label-alternative)", fontWeight: 500 }}>
-                  {" "}/ {actions.length}
-                </span>
-              </div>
-              <div className="metric-d">
-                {actionFails > 0 ? `${actionFails}건 실패` : "성공률 100%"}
-              </div>
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="metric">
-              <div className="metric-l">토큰 사용</div>
-              <div className="metric-n">
-                {tokenTotal > 0 ? tokenTotal.toLocaleString() : "—"}
-              </div>
-              <div className="metric-d">claude-sonnet-4.6</div>
-            </div>
-            <div className="metric">
-              <div className="metric-l">상태</div>
-              <div
-                className="metric-n"
-                style={{
-                  fontSize: 18,
-                  fontWeight: 600,
-                  letterSpacing: 0,
-                  fontFamily: "var(--font-family-mono)",
-                }}
-              >
-                {agentState}
-              </div>
-              <div className="metric-d">Vercel Sandbox · noVNC</div>
-            </div>
-          </>
-        )}
-      </div>
-
-      <div className="run-grid">
-        <Viewer viewerUrl={viewerUrl} agentState={agentState} />
-        <StreamRail
-          events={events}
-          agentState={agentState}
-          stepCount={stepCount}
-          onCancel={onCancel}
-        />
-      </div>
-    </div>
-  );
-}
-
-/* ────────────────── viewer ────────────────── */
-
-function Viewer({
-  viewerUrl,
-  agentState,
-}: {
-  viewerUrl: string | null;
-  agentState: AgentState;
-}) {
-  return (
-    <div className="viewer">
-      <div className="viewer-bar">
-        <div className="vb-dots">
-          <span className="vb-dot" />
-          <span className="vb-dot" />
-          <span className="vb-dot" />
-        </div>
-        <div className="vb-url" title={viewerUrl ?? ""}>
-          <Icon name="lock" size={11} />
-          <span className="vb-url-text">
-            {viewerUrl
-              ? viewerUrl.replace(/^https?:\/\//, "").replace(/\?.*$/, "")
-              : "viewer 부팅 중…"}
-          </span>
-        </div>
-        <div className="vb-meta">
-          {viewerUrl ? (
-            <span className="live-pill">
-              <span className="live-dot" />
-              LIVE
-            </span>
-          ) : (
-            <span
-              className="live-pill"
-              style={{
-                background: "var(--semantic-fill-normal)",
-                color: "var(--semantic-label-alternative)",
-              }}
-            >
-              IDLE
-            </span>
-          )}
-          {viewerUrl && (
-            <a
-              className="icon-btn"
-              href={viewerUrl}
-              target="_blank"
-              rel="noreferrer"
-              title="새 창"
-            >
-              <Icon name="expand" size={14} />
-            </a>
-          )}
-        </div>
-      </div>
-      <div className="viewer-stage">
-        {viewerUrl ? (
-          <iframe
-            src={viewerUrl}
-            title="agent live viewer"
-            style={{
-              position: "absolute",
-              inset: 0,
-              width: "100%",
-              height: "100%",
-              border: 0,
-              background: "#000",
-            }}
-            allow="clipboard-read; clipboard-write"
-          />
-        ) : (
-          <div className="stage-cover">
-            {agentState === "running" ? (
-              <>
-                <div className="stage-spinner" />
-                <div>마이크로VM 부팅 중…</div>
-                <div className="small">
-                  Vercel Sandbox + Xvnc + websockify 셋업 (콜드스타트 ~60초)
-                </div>
-              </>
-            ) : (
-              <>
-                <div style={{ fontSize: 13, color: "#989BA2" }}>
-                  viewer 대기 중
-                </div>
-                <div className="small">실행을 시작하면 여기에 라이브 화면이 떠요</div>
-              </>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ────────────────── stream rail ────────────────── */
-
-function StreamRail({
-  events,
-  agentState,
-  stepCount,
-  onCancel,
-}: {
-  events: LogEvent[];
-  agentState: AgentState;
-  stepCount: number;
-  onCancel: () => void;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
-  }, [events.length]);
-
-  // Approximate progress: 50 max steps, otherwise show running animation
-  const progress =
-    agentState === "done"
-      ? 1
-      : agentState === "running"
-        ? Math.min(0.9, stepCount / 50)
-        : 0;
-
-  return (
-    <div className="stream">
-      <div className="stream-h">
-        <div className="t">에이전트 스트림</div>
-        <div className="meta">
-          NDJSON · {events.length} ev
-        </div>
-        {agentState === "running" && (
+      <div className="toss-empty-prompts">
+        {PROMPT_SUGGESTIONS.map((t) => (
           <button
+            key={t}
             type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={onCancel}
-            style={{ marginLeft: 8, padding: "4px 8px" }}
+            className="toss-empty-prompt"
+            onClick={() => onPick(t)}
           >
-            중단
+            {t}
           </button>
-        )}
-      </div>
-      <div className="stream-progress" style={{ "--p": `${progress * 100}%` } as React.CSSProperties} />
-      <div className="events" ref={ref}>
-        {events.map((e, i) => (
-          <EventLine key={i} ev={e} last={i === events.length - 1 && agentState === "running"} />
         ))}
-        {agentState === "running" && (
-          <div className="ev" style={{ opacity: 0.55 }}>
-            <div className="ev-rail">
-              <div
-                className="ev-icon pulse-ring"
-                style={{ background: "var(--semantic-primary-normal)" }}
-              />
-            </div>
-            <div className="ev-body">
-              <div
-                className="ev-msg"
+      </div>
+    </div>
+  );
+}
+
+/* ────────────────── message view ────────────────── */
+
+function MessageView({ msg }: { msg: ChatMessage }) {
+  if (msg.role === "user") {
+    return (
+      <div className="toss-msg-user">
+        <div className="toss-msg-user-bubble">{msg.content}</div>
+      </div>
+    );
+  }
+
+  // assistant
+  const stepsOnly = msg.steps.filter((s) => s.kind === "step");
+  const showRunCard =
+    stepsOnly.length > 0 || msg.status === "running" || msg.status === "done";
+
+  const isAwaiting = msg.status === "expired";
+  const isErrored = msg.status === "error";
+
+  return (
+    <div className="toss-msg-agent">
+      {msg.content ? (
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+      ) : msg.status === "running" ? (
+        <p style={{ color: "var(--grey-500)", fontStyle: "italic" }}>
+          생각 중…
+        </p>
+      ) : null}
+
+      {showRunCard && <RunCard steps={msg.steps} status={msg.status} />}
+
+      {msg.postUrl && (
+        <p>
+          <a href={msg.postUrl} target="_blank" rel="noreferrer">
+            {msg.postUrl}
+          </a>
+        </p>
+      )}
+
+      {isAwaiting && (
+        <Callout
+          tone="warn"
+          title="로그인 필요"
+        >
+          {msg.errorMessage?.replace(/^AWAITING_LOGIN:\s*/, "") ||
+            "Daum/Kakao 로그인이 필요해요. 사이드바의 "}
+          {!msg.errorMessage?.startsWith("AWAITING_LOGIN") && (
+            <>
+              <strong>재로그인</strong>
+              {" 버튼을 눌러주시면 이어서 진행해드릴게요."}
+            </>
+          )}
+        </Callout>
+      )}
+
+      {isErrored && !isAwaiting && msg.errorMessage && (
+        <Callout tone="danger" title="오류">
+          {msg.errorMessage}
+        </Callout>
+      )}
+    </div>
+  );
+}
+
+/* ────────────────── run card ────────────────── */
+
+function RunCard({
+  steps,
+  status,
+}: {
+  steps: RunStep[];
+  status?: ChatMessage["status"];
+}) {
+  const [open, setOpen] = useState(true);
+  const stepRows = steps.filter((s) => s.kind === "step");
+  const phases = steps.filter((s) => s.kind === "phase");
+
+  const statusClass =
+    status === "done"
+      ? "done"
+      : status === "error" || status === "expired"
+        ? "error"
+        : "running";
+  const statusLabel =
+    status === "done"
+      ? "완료"
+      : status === "error"
+        ? "오류"
+        : status === "expired"
+          ? "로그인 필요"
+          : "진행 중";
+
+  return (
+    <div className="toss-run">
+      <button
+        type="button"
+        className="toss-run-header"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className={`toss-run-chev ${open ? "open" : "closed"}`}>
+          <Ic.ChevronDown size={14} />
+        </span>
+        <span className="toss-run-title">실행 단계</span>
+        <span className="toss-run-count">{stepRows.length}</span>
+        <span className={`toss-run-status ${statusClass}`}>
+          <span className="dot" />
+          {statusLabel}
+        </span>
+      </button>
+      {open && (
+        <div className="toss-run-body">
+          {phases.length > 0 && stepRows.length === 0 && (
+            <PhaseList phases={phases} />
+          )}
+          {stepRows.map((s, i) => (
+            <StepRow key={i} index={i} step={s} done={i < stepRows.length - 1 || status === "done"} />
+          ))}
+          {phases.length > 0 && stepRows.length > 0 && (
+            <details style={{ marginTop: 6 }}>
+              <summary
                 style={{
-                  fontStyle: "italic",
-                  color: "var(--semantic-label-alternative)",
+                  fontSize: 11,
+                  color: "var(--grey-400)",
+                  cursor: "pointer",
+                  fontFamily: "var(--font-mono)",
+                  padding: "4px 4px",
                 }}
               >
-                다음 도구 호출 결정 중…
-              </div>
-            </div>
-          </div>
-        )}
-        {events.length === 0 && agentState !== "running" && (
-          <div
-            style={{
-              color: "var(--semantic-label-alternative)",
-              fontSize: 13,
-              padding: "20px 4px",
-              textAlign: "center",
-            }}
-          >
-            아직 이벤트가 없어요
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function EventLine({ ev, last }: { ev: LogEvent; last: boolean }) {
-  // ev.t is stamped when the event is added to state, so this is pure.
-  const time =
-    typeof ev.t === "number"
-      ? new Date(ev.t).toLocaleTimeString("ko-KR", { hour12: false })
-      : "";
-
-  const iconClass =
-    ev.kind === "action" && ev.success === false
-      ? "action"
-      : ev.kind === "action" && ev.success === true
-        ? "action ok"
-        : ev.kind;
-
-  const iconChar =
-    ev.kind === "step"
-      ? String(ev.stepNumber ?? "•")
-      : ev.kind === "phase"
-        ? "◆"
-        : ev.kind === "status"
-          ? "›"
-          : ev.kind === "violation"
-            ? "!"
-            : ev.kind === "action"
-              ? ev.success === false
-                ? "×"
-                : "✓"
-              : ev.kind === "done"
-                ? "✓"
-                : ev.kind === "error"
-                  ? "!"
-                  : ev.kind === "viewer"
-                    ? "▶"
-                    : "·";
-
-  const primary =
-    ev.message ??
-    ev.line ??
-    ev.text ??
-    ev.summary ??
-    (ev.kind === "step"
-      ? `step ${ev.stepNumber} · ${ev.finishReason ?? ""}`
-      : ev.kind === "violation"
-        ? `${ev.author ?? "(unknown)"} · ${ev.where ?? ""}`
-        : ev.kind === "action"
-          ? `${ev.author ?? "(unknown)"} → ${ev.action ?? ""} (${ev.success ? "OK" : "FAIL"})`
-          : "");
-
-  const tools = ev.toolsUsed ?? ev.tools ?? [];
-
-  return (
-    <div className="ev">
-      <div className="ev-rail">
-        <div className={`ev-icon ${iconClass}`}>{iconChar}</div>
-        {!last && <div className="ev-line" />}
-      </div>
-      <div className="ev-body">
-        <div className="ev-h">
-          <span className="ev-kind">{ev.kind}</span>
-          <span className="ev-time">{time}</span>
-        </div>
-        <div className="ev-msg">{primary}</div>
-        {tools.length > 0 && (
-          <div className="ev-tools">
-            {tools.map((tn) => (
-              <span key={tn} className="ev-tool">
-                {tn}
-              </span>
-            ))}
-          </div>
-        )}
-        {ev.kind === "chunk" && ev.text && (
-          <div className="ev-chunk">{ev.text}</div>
-        )}
-        {ev.kind === "violation" && (
-          <ViolationCard ev={ev} />
-        )}
-        {ev.kind === "action" && (
-          <div className="violation-card">
-            <div className="violation-h">
-              <span className="author">{ev.author ?? "(unknown)"}</span>
-              <span className="where">· {ev.action ?? ""}</span>
-              <span className={`action-status ${ev.success ? "success" : "fail"}`}>
-                {ev.success ? "성공" : "실패"}
-              </span>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function ViolationCard({ ev }: { ev: LogEvent }) {
-  const matched = ev.matched ?? [];
-  const snippet = ev.snippet ?? "";
-  return (
-    <div className="violation-card" data-sev="high">
-      <div className="violation-h">
-        <span className="author">{ev.author ?? "(unknown)"}</span>
-        <span className="where">· {ev.where ?? ""}</span>
-        <span className="action-status pending">검토 대기</span>
-      </div>
-      {snippet && (
-        <div className="violation-snippet">{highlight(snippet, matched)}</div>
-      )}
-      {matched.length > 0 && (
-        <div className="violation-foot">
-          {matched.map((k) => (
-            <span key={k} className="matched-chip">
-              #{k}
-            </span>
-          ))}
+                phase 로그 ({phases.length})
+              </summary>
+              <PhaseList phases={phases} />
+            </details>
+          )}
         </div>
       )}
     </div>
   );
 }
 
-function highlight(text: string, kws: string[]): React.ReactNode[] {
-  let parts: Array<string | React.ReactNode> = [text];
-  kws.forEach((kw, kwi) => {
-    parts = parts.flatMap((part, pi) => {
-      if (typeof part !== "string") return [part];
-      const re = new RegExp(`(${escapeRegExp(kw)})`, "gi");
-      const splits = part.split(re);
-      return splits.map((s, i) =>
-        i % 2 === 1 ? <mark key={`${kwi}-${pi}-${i}`}>{s}</mark> : s,
-      );
-    });
-  });
-  return parts as React.ReactNode[];
+function PhaseList({ phases }: { phases: RunStep[] }) {
+  return (
+    <div
+      style={{
+        fontSize: 11,
+        fontFamily: "var(--font-mono)",
+        color: "var(--grey-500)",
+        padding: "4px 8px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 2,
+        background: "var(--grey-50)",
+        borderRadius: 8,
+        margin: "4px 0",
+      }}
+    >
+      {phases.map((p, i) => (
+        <div key={i}>· {p.message}</div>
+      ))}
+    </div>
+  );
 }
 
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function StepRow({
+  index,
+  step,
+  done,
+}: {
+  index: number;
+  step: RunStep;
+  done: boolean;
+}) {
+  const tools = step.toolsUsed ?? [];
+  const primary = tools[0];
+  const meta = primary ? TOOL_META[primary] : null;
+  const ToolIcon = meta ? Ic[meta.icon] : null;
+
+  // detail: prefer the toolsUsed list, fall back to the message
+  const detail =
+    tools.length > 1
+      ? tools.slice(1).join(", ")
+      : step.message
+          .replace(/^step \d+\s*·?\s*/i, "")
+          .replace(/^tool-calls?\s*/i, "")
+          .trim();
+
+  return (
+    <div className={`toss-step ${done ? "done" : ""}`}>
+      <div className="idx">
+        {done ? <Ic.Check size={13} color="var(--toss-green-600)" /> : index}
+      </div>
+      <div className="body">
+        {primary ? (
+          <span className="tag">
+            {ToolIcon && <ToolIcon size={11} color="var(--grey-500)" />}
+            {primary}
+          </span>
+        ) : (
+          <span className="tag">step {step.stepNumber ?? index}</span>
+        )}
+        {detail && <span className="detail">{detail}</span>}
+      </div>
+    </div>
+  );
 }
 
-/* ────────────────── daum login modal ────────────────── */
+/* ────────────────── callout ────────────────── */
+
+function Callout({
+  tone,
+  title,
+  children,
+}: {
+  tone: "warn" | "danger";
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className={`toss-callout ${tone === "warn" ? "warn" : ""}`}>
+      <span className="toss-callout-icon">
+        <Ic.Warn size={20} />
+      </span>
+      <div>
+        <div className="toss-callout-title">{title}</div>
+        <div className="toss-callout-body">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+/* ────────────────── composer ────────────────── */
+
+function Composer({
+  value,
+  onChange,
+  onSend,
+  disabled,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onSend: () => void;
+  disabled: boolean;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const ta = ref.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
+  }, [value]);
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      onSend();
+    }
+  };
+
+  return (
+    <div className="toss-composer">
+      <div className="toss-composer-box">
+        <textarea
+          ref={ref}
+          className="toss-composer-input"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={onKeyDown}
+          placeholder="시킬 일을 적어주세요. 예: '이 제목 글 삭제해줘' / 'RTX 5070 후기 써줘'"
+          rows={1}
+        />
+        <button
+          type="button"
+          className="toss-composer-send"
+          onClick={onSend}
+          disabled={disabled || value.trim().length === 0}
+          aria-label="보내기"
+        >
+          <Ic.Send size={16} color="#fff" />
+        </button>
+      </div>
+      <div className="toss-composer-hints">
+        <span>⌘⏎ 전송</span>
+        <span>⇧⏎ 줄바꿈</span>
+        <span className="grow" />
+        <span>로컬 모드 · 안전 격리됨</span>
+      </div>
+    </div>
+  );
+}
+
+/* ────────────────── login modal ────────────────── */
 
 function DaumLoginModal({
-  initialEmail,
-  initialPassword,
-  onSave,
-  onSkip,
   onClose,
+  onSuccess,
 }: {
-  initialEmail: string;
-  initialPassword: string;
-  onSave: (email: string, password: string, runNow: boolean) => void;
-  onSkip: () => void;
   onClose: () => void;
+  onSuccess: () => void;
 }) {
-  const [email, setEmail] = useState(initialEmail);
-  const [password, setPassword] = useState(initialPassword);
-  const canSave = email.includes("@") && password.length > 0;
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  const canSubmit = email.includes("@") && password.length > 0 && !busy;
+
+  async function submit() {
+    if (!canSubmit) return;
+    setBusy(true);
+    setError(null);
+    setProgress(["로그인 시도 중…"]);
+
+    try {
+      const res = await fetch("/api/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      if (!res.ok || !res.body) {
+        setError(`서버 오류: ${res.status} ${res.statusText}`);
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      let succeeded = false;
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let i: number;
+        while ((i = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, i).trim();
+          buf = buf.slice(i + 1);
+          if (!line) continue;
+          try {
+            const ev = JSON.parse(line) as { kind: string; message?: string };
+            if (ev.kind === "phase") {
+              setProgress((p) => [...p, ev.message ?? ""]);
+            } else if (ev.kind === "done") {
+              setProgress((p) => [...p, ev.message ?? "✓ 로그인 성공"]);
+              succeeded = true;
+            } else if (ev.kind === "error") {
+              setError(ev.message ?? "로그인 실패");
+            }
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+      if (succeeded) {
+        setTimeout(() => onSuccess(), 600);
+      } else if (!error) {
+        setError("로그인 완료되지 않음");
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop" onClick={busy ? undefined : onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-h">
-          <div className="t">Daum 계정 (선택)</div>
-          <button type="button" className="icon-btn" onClick={onClose}>
-            <Icon name="x" size={16} />
-          </button>
+          <div className="t">Daum 로그인</div>
+          {!busy && (
+            <button type="button" className="icon-btn" onClick={onClose}>
+              <Ic.X size={16} />
+            </button>
+          )}
         </div>
         <div className="modal-body">
-          <p>
-            카페 세션이 만료되면 에이전트가 이 계정으로 자동 로그인 시도합니다.
-            2FA(이메일 인증/캡차)가 뜨면 위 라이브 iframe에서 직접 통과해 주세요
-            — 에이전트가 로그인 완료까지 최대 8분 대기합니다.
-          </p>
+          <div
+            style={{
+              fontSize: 13,
+              lineHeight: 1.6,
+              color: "var(--grey-700)",
+              background: "var(--grey-50)",
+              border: "1px solid var(--border-subtle)",
+              borderRadius: 10,
+              padding: "10px 12px",
+            }}
+          >
+            <div style={{ fontWeight: 700, color: "var(--grey-900)", marginBottom: 4 }}>
+              로그인 동작 방식
+            </div>
+            ① 로그인 시 <strong>별도의 Chrome 창</strong>이 자동으로 열립니다.
+            <br />
+            ② 그 Chrome 창에서 자동 입력 + (필요하면) 2FA 직접 통과.
+            <br />
+            ③ 로그인 성공 후 <strong>그 Chrome 창은 절대 닫지 마세요</strong> —
+            에이전트가 같은 창에서 작업합니다. 닫으면 다시 로그인 필요.
+            <br />
+            ④ AgentCafe 앱을 ⌘Q로 종료하면 Chrome 창도 같이 정리됩니다.
+            <br />
+            <span style={{ fontSize: 12, color: "var(--grey-500)" }}>
+              입력값은 매 요청 body로만 전달, 서버에 저장 안 함.
+            </span>
+          </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <input
               className="text-input"
@@ -1662,6 +973,8 @@ function DaumLoginModal({
               placeholder="email@daum.net"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+              disabled={busy}
+              autoFocus
             />
             <input
               className="text-input"
@@ -1670,23 +983,65 @@ function DaumLoginModal({
               placeholder="비밀번호"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+              disabled={busy}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") submit();
+              }}
             />
           </div>
-          <p style={{ fontSize: 11, color: "var(--semantic-label-alternative)" }}>
-            ※ 입력한 값은 브라우저 sessionStorage에만 저장되며, 서버에는 매 요청
-            body로만 전달됩니다 (영구 저장 X).
-          </p>
+
+          {progress.length > 0 && (
+            <div
+              style={{
+                fontSize: 12,
+                color: "var(--grey-500)",
+                fontFamily: "var(--font-mono)",
+                background: "var(--grey-50)",
+                padding: "8px 10px",
+                borderRadius: 8,
+                border: "1px solid var(--border-subtle)",
+                maxHeight: 140,
+                overflowY: "auto",
+              }}
+            >
+              {progress.map((p, i) => (
+                <div key={i}>· {p}</div>
+              ))}
+            </div>
+          )}
+
+          {error && (
+            <div
+              style={{
+                fontSize: 13,
+                color: "var(--toss-red-500)",
+                background: "rgba(240,66,81,0.06)",
+                padding: "10px 12px",
+                borderRadius: 8,
+                border: "1px solid var(--toss-red-100)",
+              }}
+            >
+              {error}
+            </div>
+          )}
+
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-            <button type="button" className="btn btn-out btn-sm" onClick={onSkip}>
-              그냥 진행
-            </button>
+            {!busy && (
+              <button
+                type="button"
+                className="btn btn-out btn-sm"
+                onClick={onClose}
+              >
+                취소
+              </button>
+            )}
             <button
               type="button"
               className="btn btn-primary btn-sm"
-              disabled={!canSave}
-              onClick={() => onSave(email, password, true)}
+              disabled={!canSubmit}
+              onClick={submit}
             >
-              저장 후 실행
+              {busy ? "로그인 중…" : "로그인"}
             </button>
           </div>
         </div>
@@ -1695,53 +1050,226 @@ function DaumLoginModal({
   );
 }
 
-/* ────────────────── seed modal ────────────────── */
+/* ────────────────── onboarding modal ────────────────── */
 
-function SeedModal({ onClose }: { onClose: () => void }) {
-  const [copied, setCopied] = useState(false);
-  const cmd = "npm run seed";
+type OnboardingCard = {
+  emoji: string;
+  title: string;
+  body: React.ReactNode;
+};
+
+const ONBOARDING_CARDS: OnboardingCard[] = [
+  {
+    emoji: "👋",
+    title: "AgentCafe에 오신 걸 환영합니다",
+    body: (
+      <>
+        Daum 카페에 글 쓰기·삭제·관리·조회를 자연어로 시키면 Claude가 직접
+        Chrome 브라우저를 열어서 처리해주는 운영자용 도구입니다. 모든 작업은 본
+        PC에서만 일어나고 외부 서버로 자료가 빠져나가지 않아요.
+      </>
+    ),
+  },
+  {
+    emoji: "🔐",
+    title: "처음에 한 번만 로그인",
+    body: (
+      <>
+        사이드바의 <strong>로그인</strong> 버튼을 누르면 별도의 Chrome 창이
+        열리고 자동으로 Daum/카카오 로그인을 진행합니다. 2FA가 뜨면 그 Chrome
+        창에서 직접 통과해 주세요. 한 번 로그인하면 <strong>앱이 켜져있는
+        동안</strong>은 계속 유지됩니다.
+      </>
+    ),
+  },
+  {
+    emoji: "🪟",
+    title: "Chrome 창은 절대 닫지 마세요",
+    body: (
+      <>
+        로그인 후 뜨는 그 Chrome 창이 곧 <strong>에이전트의 작업 창</strong>
+        이에요. 모든 글 작성·삭제·조회가 그 한 창에서 일어납니다.
+        창을 닫으면 카카오 세션이 끊겨서 다시 로그인해야 해요.
+        <br />
+        앱을 끝낼 땐 AgentCafe를 ⌘Q로 종료하시면 Chrome 창도 같이 정리됩니다.
+      </>
+    ),
+  },
+  {
+    emoji: "💬",
+    title: "이렇게 시키면 됩니다",
+    body: (
+      <>
+        <ul style={{ margin: "8px 0 0", paddingLeft: 18, lineHeight: 1.7 }}>
+          <li>“RTX 5070 후기 글 하나 써줘”</li>
+          <li>“[제목 일부] 이 글 삭제해줘”</li>
+          <li>“오늘 자유게시판 새 글 보여줘”</li>
+          <li>“광고 도배글 5개 차단해줘”</li>
+        </ul>
+        <p style={{ marginTop: 10, fontSize: 12.5, color: "var(--grey-500)" }}>
+          ⚠️ 한 번에 30개씩 시키면 Daum의 연속 등록 제한에 걸려요.{" "}
+          <strong>5~10개씩 끊어서</strong> 시키세요.
+        </p>
+      </>
+    ),
+  },
+];
+
+function OnboardingModal({ onClose }: { onClose: () => void }) {
+  const [step, setStep] = useState(0);
+  const total = ONBOARDING_CARDS.length;
+  const card = ONBOARDING_CARDS[step];
+  const isLast = step === total - 1;
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-h">
-          <div className="t">세션 재발급</div>
+          <div className="t">사용법 안내</div>
           <button type="button" className="icon-btn" onClick={onClose}>
-            <Icon name="x" size={16} />
+            <Ic.X size={16} />
           </button>
         </div>
         <div className="modal-body">
-          <p>
-            세션이 만료되면 <strong>로컬 터미널</strong>에서 아래 명령을
-            실행해주세요. 카카오가 미국 IP에서 이메일 인증을 요구하기 때문에
-            서버에서는 자동 시드가 안 돼요.
-          </p>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <code style={{ flex: 1 }}>{cmd}</code>
+          <div
+            style={{
+              fontSize: 40,
+              lineHeight: 1,
+              textAlign: "center",
+              padding: "8px 0 4px",
+            }}
+            aria-hidden
+          >
+            {card.emoji}
+          </div>
+          <div
+            style={{
+              fontSize: 17,
+              fontWeight: 700,
+              textAlign: "center",
+              color: "var(--grey-900)",
+            }}
+          >
+            {card.title}
+          </div>
+          <div
+            style={{
+              fontSize: 13.5,
+              color: "var(--grey-600)",
+              lineHeight: 1.65,
+              padding: "0 4px",
+            }}
+          >
+            {card.body}
+          </div>
+
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "center",
+              gap: 6,
+              padding: "4px 0 0",
+            }}
+            aria-label="진행 단계"
+          >
+            {ONBOARDING_CARDS.map((_, i) => (
+              <span
+                key={i}
+                style={{
+                  width: i === step ? 18 : 6,
+                  height: 6,
+                  borderRadius: 3,
+                  background:
+                    i === step ? "var(--toss-blue-500)" : "var(--grey-200)",
+                  transition: "width 160ms ease",
+                }}
+              />
+            ))}
+          </div>
+
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              gap: 8,
+              paddingTop: 4,
+            }}
+          >
             <button
               type="button"
               className="btn btn-out btn-sm"
-              onClick={async () => {
-                try {
-                  await navigator.clipboard.writeText(cmd);
-                  setCopied(true);
-                  setTimeout(() => setCopied(false), 1500);
-                } catch {
-                  /* ignore */
-                }
-              }}
+              onClick={() => setStep((s) => Math.max(0, s - 1))}
+              disabled={step === 0}
             >
-              {copied ? "복사됨" : "복사"}
+              이전
             </button>
+            {isLast ? (
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={onClose}
+              >
+                시작하기
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={() => setStep((s) => Math.min(total - 1, s + 1))}
+              >
+                다음
+              </button>
+            )}
           </div>
-          <ol style={{ margin: 0, paddingLeft: 20, fontSize: 13, lineHeight: 1.7, color: "var(--semantic-label-alternative)" }}>
-            <li>위 명령 실행 → Chromium 창이 열려요</li>
-            <li>다음/카카오 로그인을 손으로 완료</li>
-            <li>쿠키 자동 감지 → Blob 업로드 완료 메시지 확인</li>
-            <li>이 창 닫고 다시 작업 실행</li>
-          </ol>
-          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ────────────────── edit cafe modal ────────────────── */
+
+function EditCafeUrlModal({
+  initial,
+  onClose,
+  onSave,
+}: {
+  initial: string;
+  onClose: () => void;
+  onSave: (v: string) => void;
+}) {
+  const [v, setV] = useState(initial);
+  const valid = /^https?:\/\/cafe\.daum\.net\/.+/.test(v.trim());
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-h">
+          <div className="t">대상 카페 변경</div>
+          <button type="button" className="icon-btn" onClick={onClose}>
+            <Ic.X size={16} />
+          </button>
+        </div>
+        <div className="modal-body">
+          <p>모든 명령이 이 카페에서 실행됩니다.</p>
+          <input
+            className="text-input"
+            type="url"
+            value={v}
+            onChange={(e) => setV(e.target.value)}
+            placeholder="https://cafe.daum.net/..."
+            autoFocus
+          />
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
             <button type="button" className="btn btn-out btn-sm" onClick={onClose}>
-              닫기
+              취소
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              disabled={!valid}
+              onClick={() => onSave(v.trim())}
+            >
+              저장
             </button>
           </div>
         </div>
