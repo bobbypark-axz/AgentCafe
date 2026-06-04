@@ -4,13 +4,15 @@
 > 매일 반복하는 일 — 글쓰기, 광고·스팸 댓글 정리, 댓글 달기, 글 삭제 — 을
 > Claude AI가 브라우저를 직접 조작해서 대신 처리해 줍니다.
 
+![AgentCafe 화면](docs/screenshot.png)
+
 ---
 
 ## 🎬 데모 영상
 
-먼저 보시면 감이 옵니다 👇 (재생이 안 되면 [여기서 다운로드](https://github.com/bobbypark-axz/AgentCafe/releases/download/v0.1.0/AgentCafe-demo.mp4))
+미리보기 👇 (재생이 안 되면 [여기서 다운로드](https://github.com/bobbypark-axz/AgentCafe/releases/download/v0.1.0/AgentCafe-demo.mp4))
 
-<video src="https://github.com/bobbypark-axz/AgentCafe/releases/download/v0.1.0/AgentCafe-demo.mp4" controls width="100%"></video>
+<video src="https://github.com/bobbypark-axz/AgentCafe/releases/download/v0.1.0/AgentCafe-demo.mp4" poster="docs/screenshot.png" controls width="100%"></video>
 
 ---
 
