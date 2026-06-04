@@ -10,9 +10,11 @@
 
 ## 🎬 데모 영상
 
-아래 이미지를 클릭하면 GitHub에서 영상이 재생됩니다 ▶
 
-[![데모 영상 재생하기](docs/screenshot.png)](docs/demo.mp4)
+
+
+
+
 
 ---
 
