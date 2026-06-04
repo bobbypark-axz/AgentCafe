@@ -8,7 +8,9 @@
 
 ## 🎬 데모 영상
 
-먼저 1분만 보시면 감이 옵니다 → **[데모 영상 다운로드](https://github.com/bobbypark-axz/AgentCafe/releases/download/v0.1.0/AgentCafe-demo.mp4)**
+먼저 보시면 감이 옵니다 👇 (재생이 안 되면 [여기서 다운로드](https://github.com/bobbypark-axz/AgentCafe/releases/download/v0.1.0/AgentCafe-demo.mp4))
+
+<video src="https://github.com/bobbypark-axz/AgentCafe/releases/download/v0.1.0/AgentCafe-demo.mp4" controls width="100%"></video>
 
 ---
 
