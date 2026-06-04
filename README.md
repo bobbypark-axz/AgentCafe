@@ -1,150 +1,97 @@
 # AgentCafe
 
-Claude 에이전트가 로그인된 다음(Daum) 세션을 이어받아 **카페를 대신 만들어주는** 웹앱입니다.
-Next.js UI + Vercel Sandbox(브라우저 자동화) + Vercel AI Gateway(Claude) + Vercel Blob(세션 저장).
-
-> ⚠️  다음카페 자동화는 공식 API가 없어서 브라우저 조작으로 수행합니다. 본인 소유
-> 계정에 한해, 이용약관을 준수하는 범위에서만 사용하세요.
+> **다음(Daum) 카페 운영자를 위한 AI 자동화 데스크톱 앱.**
+> 매일 반복하는 일 — 글쓰기, 광고·스팸 댓글 정리, 댓글 달기, 글 삭제 — 을
+> Claude AI가 브라우저를 직접 조작해서 대신 처리해 줍니다.
 
 ---
 
-## 아키텍처
+## 🎬 데모 영상
 
-```
-브라우저(폼 입력)
-   └─► POST /api/create-cafe                 (Next.js Fluid Compute 함수)
-         ├─► @vercel/blob.list()             → storageState.json 공개 URL 조회
-         └─► Vercel Sandbox (Amazon Linux µVM)
-               ├── dnf: Chromium 시스템 라이브러리 설치
-               ├── npm install (agent 의존성)
-               ├── npx playwright install chromium
-               └── node agent.mjs
-                     ├─ fetch(storageStateUrl) → /tmp/daum-storage-state.json
-                     ├─ spawn @playwright/mcp --storage-state ...
-                     ├─ createMCPClient(stdio)    ← AI SDK
-                     └─ ToolLoopAgent(model: anthropic/claude-sonnet-4.6)
-                           └─ 카페 생성 단계 자율 실행, JSON 로그 스트림
-```
+먼저 1분만 보시면 감이 옵니다 → **[데모 영상 다운로드](https://github.com/bobbypark-axz/AgentCafe/releases/download/v0.1.0/AgentCafe-demo.mp4)**
 
-에이전트는 stdout 한 줄당 `{ kind, ... }` JSON 이벤트를 방출합니다.
-라우트는 그걸 NDJSON으로 그대로 중계하고, 프론트엔드는 한 줄씩 파싱해 실시간 로그로 보여줍니다.
+---
 
-## 사전 준비
+## ⬇️ 다운로드 & 설치 (macOS · Apple Silicon)
 
-1. **Vercel CLI 로그인 + 프로젝트 연결**
+> M1/M2/M3 이상 Apple Silicon 맥 전용입니다.
 
+**1. 설치파일 받기** → **[AgentCafe-0.1.0-arm64.dmg 다운로드](https://github.com/bobbypark-axz/AgentCafe/releases/latest)**
+(GitHub에 로그인된 사내 계정으로 접속하면 보입니다. 비공개 저장소예요.)
+
+**2. 설치**
+1. 받으신 `.dmg` 파일을 더블클릭해서 열어주세요.
+2. 안에 있는 **AgentCafe.app** 을 **응용 프로그램(Applications)** 폴더로 드래그합니다.
+
+**3. "손상되었습니다" 메시지가 뜨는 경우만** 아래를 진행하세요.
+(서명되지 않은 앱이라 macOS가 막는 것일 뿐, 정상입니다.)
+
+3. **터미널** 앱을 실행합니다. (`⌘ + Space` → "터미널" 검색)
+4. 아래 명령어를 복사해 붙여넣고 **Enter**:
    ```sh
-   npm i -g vercel@latest
-   vercel login
-   vercel link        # 새 프로젝트 생성 or 기존 프로젝트 선택
+   sudo xattr -rd com.apple.quarantine /Applications/AgentCafe.app
    ```
+5. 맥북 암호를 입력하고 **Enter**.
+   > 암호 입력 시 화면에 아무것도 안 보입니다. 그대로 입력 후 Enter 누르시면 됩니다.
+6. 응용 프로그램 폴더에서 **AgentCafe** 를 더블클릭하면 실행됩니다.
 
-2. **Vercel Blob 스토어 생성**
-   대시보드 → Storage → Blob 생성. `BLOB_READ_WRITE_TOKEN`이 프로젝트 환경변수로 자동 주입됩니다.
+---
 
-3. **AI Gateway 활성화**
-   대시보드 → Project Settings → AI Gateway 활성화. 인증은 OIDC(`VERCEL_OIDC_TOKEN`)가 기본입니다.
+## 🤔 이게 뭔가요? (배경)
 
-4. **로컬 환경변수 동기화**
+다음 카페는 한국에서 여전히 활발한 커뮤니티지만, **운영자를 위한 자동화 도구가 사실상 없습니다.**
+카카오(다음)가 공식 API를 제공하지 않아, 운영자는 매일 직접 글을 쓰고, 광고 댓글을
+하나하나 지우고, 도배 글을 손으로 관리해야 합니다. 기존 매크로는 UI가 바뀔 때마다 깨지고요.
 
-   ```sh
-   vercel env pull .env.local
-   ```
+AgentCafe는 **Claude AI가 사람처럼 브라우저를 보고 클릭**하게 만들어 이 일을 대신합니다.
+운영자가 **딱 한 번 로그인**하면, 이후엔 채팅창에 한국어로 시키기만 하면 됩니다.
 
-   `.env.example`에 필요한 키 목록이 있습니다. 로컬에서 Vercel Sandbox를 쓰려면
-   `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` 도 추가로 필요합니다
-   (개인 엑세스 토큰 생성 → `vercel env add ...`).
+---
 
-5. **다음 로그인 세션 시드**
+## 👤 누구를 위한 건가요?
 
-   ```sh
-   npm run seed
-   ```
+**1인 카페 운영자.**
+회원 수천~수만 명 규모의 다음 카페를 혼자 운영하고, 본업이 따로 있어
+글쓰기·댓글 관리·정리 작업에 쓸 시간이 부족한 분들을 위해 만들었습니다.
 
-   Chromium 창이 열리면 다음 계정으로 로그인(캡차/2FA 포함 전부 수동)하고,
-   터미널로 돌아와 Enter를 누르면 `storageState.json`이 Blob에 업로드됩니다.
-   쿠키가 만료되거나 봇감지에 걸리면 같은 명령을 다시 실행해서 재시드하세요.
+| 운영자의 부담 | AgentCafe가 대신 |
+|---|---|
+| 매일 글 안 쓰면 활동이 죽는다 | 카페 톤에 맞는 글을 **대신 작성·게시** |
+| 광고·스팸 댓글 일일이 지우기 귀찮다 | 광고성 댓글을 **자동 감지·삭제** |
+| 글마다 댓글 달아주기 번거롭다 | 자연스러운 **댓글 자동 작성** |
+| 필요 없는 글 정리 | 글 **삭제** |
 
-## 로컬 실행
+---
 
-```sh
-npm run dev         # http://localhost:3000
-```
+## ✅ 현재 지원 기능
 
-폼에 카페 이름, 소개, 공개/비공개, 카테고리를 입력하고 "카페 만들기"를 누르면
-Sandbox가 콜드스타트(30~60초) 후 에이전트를 실행합니다.
+- **광고성 댓글 자동 감지 및 삭제** — 본문·댓글에서 광고/스팸 패턴을 찾아 정리
+- **글쓰기** — 카페 톤에 맞는 한국어 글을 작성해 게시
+- **댓글 달기** — 글에 자연스러운 댓글 작성
+- **글 삭제** — 제목/URL로 글을 찾아 삭제
 
-## 배포
+---
 
-```sh
-vercel           # Preview
-vercel --prod    # Production
-```
+## 🚀 사용법
 
-## 콜드스타트 최적화 (선택)
+1. **앱 실행** 후 사이드바의 **`로그인`** 버튼을 눌러 다음(Daum) 계정으로 로그인합니다.
+   (운영하는 카페의 운영자 계정으로 로그인하세요. 최초 1회만 하면 됩니다.)
+2. 사이드바의 **`현재 카페`** 에 작업할 카페 주소를 입력합니다.
+   예) `https://cafe.daum.net/내카페이름`
+3. 채팅창에 **한국어로 자연스럽게** 시키면 됩니다. Claude가 알아서 브라우저를 조작합니다.
 
-시스템 라이브러리 + npm install + Chromium 다운로드는 한 번에 ~1분. 한 번 돌려서
-이상 없으면 스냅샷으로 굳혀서 매 실행을 1초 미만으로 단축할 수 있습니다.
+**이렇게 말하면 됩니다:**
+- `RTX 5070 후기 글 하나 써줘`
+- `광고성 댓글 찾아서 정리해줘`
+- `오늘 자유게시판 새 글 보여줘`
+- `[빌드로그] 주말에 조립했어요 이 제목 삭제해줘`
 
-```sh
-npm run snapshot
-# 출력된 snap_xxx ID를 환경변수에 등록:
-vercel env add AGENT_BROWSER_SNAPSHOT_ID production preview development
-vercel env pull .env.local --yes
-```
+작업하는 동안 **Chrome 창이 같이 떠서**, AI가 무엇을 클릭하는지 직접 보면서 확인할 수 있습니다.
 
-## 파일 구조
+---
 
-```
-.
-├── next.config.ts             # sandbox/ 파일 tracing include 설정
-├── sandbox/
-│   ├── package.json           # agent.mjs 전용 의존성
-│   └── agent.mjs              # Sandbox 안에서 도는 AI 에이전트
-├── scripts/
-│   ├── seed-session.ts        # 로컬 헤드 브라우저 로그인 → Blob 업로드
-│   └── create-snapshot.ts     # Sandbox 스냅샷 사전 빌드
-└── src/
-    ├── app/
-    │   ├── page.tsx           # CafeForm 렌더
-    │   └── api/create-cafe/route.ts   # POST → runCafeAgent 스트림
-    ├── components/cafe-form.tsx
-    └── lib/
-        ├── blob.ts            # Blob에서 storageState URL 조회
-        └── sandbox.ts         # Sandbox 생성 + 에이전트 실행 + NDJSON 스트림
-```
+## ⚠️ 주의사항
 
-## 환경변수 레퍼런스
-
-| 변수 | 필수 | 용도 |
-|------|------|------|
-| `BLOB_READ_WRITE_TOKEN`       | 필수 | Vercel Blob 읽기/쓰기 (세션 저장) |
-| `VERCEL_OIDC_TOKEN`           | 필수 | AI Gateway + Sandbox 인증 (로컬은 `vercel env pull`, 배포에서는 자동) |
-| `VERCEL_TOKEN` + `VERCEL_TEAM_ID` + `VERCEL_PROJECT_ID` | 로컬만 | 로컬 Sandbox 호출시 인증. Vercel 내부 실행 시 OIDC 대체 |
-| `AGENT_BROWSER_SNAPSHOT_ID`   | 선택 | Sandbox 스냅샷 ID — 있으면 콜드스타트 스킵 |
-| `DAUM_SESSION_BLOB_KEY`       | 선택 | Blob 상 storageState 경로 (기본 `sessions/daum-storage-state.json`) |
-
-## 트러블슈팅
-
-- **"No session blob found"** → `npm run seed` 실행 안 됨. 다시 시드하세요.
-- **에이전트가 로그인 페이지에 도착** → 세션 만료. `npm run seed` 재실행.
-- **"의심스러운 접속" / 캡차 페이지** → 봇감지 발동. 시드한 계정으로 짧은 시간 안에
-  너무 많이 실행했을 가능성. 잠시 쉬고, 시드 IP와 같은 리전에서 실행하거나,
-  Sandbox 리전 고정을 고려.
-- **dnf install 실패** → Amazon Linux 패키지 이름이 바뀌었을 수 있음.
-  `src/lib/sandbox.ts`의 `CHROMIUM_SYSTEM_DEPS` 확인.
-- **10분 초과 타임아웃** → Vercel Functions `maxDuration`은 최대 800s(Pro). 이미 600초.
-  더 긴 작업은 Workflow DevKit으로 전환 고려.
-
-## 보안 주의
-
-- `storageState.json`은 **다음 계정 쿠키 전체**가 들어있는 민감 데이터입니다.
-  Blob URL은 비밀 토큰(랜덤 접미사)으로만 접근 가능하지만, URL 자체가 유출되면 계정 탈취 가능.
-  - `access: 'private'` Blob(베타)로 바꾸고 `get()` 서버사이드 호출로 바꾸면 더 안전.
-- AI Gateway 요청은 기본적으로 프롬프트/응답을 저장하지 않지만, 조직 정책에 따라
-  로깅을 켜둔 경우 카페 제목·설명이 로그에 남을 수 있음.
-
-## 라이선스 및 책임
-
-이 프로젝트는 데모/학습용입니다. 카카오(다음)의 이용약관을 확인하고, 대량 생성이나
-자동화가 금지된 행위에 해당하지 않는 선에서만 사용하세요.
+- 본인이 **운영자/회원인 카페**에서, 본인 계정으로만 사용하세요. 다음(카카오) 이용약관을 준수하세요.
+- 삭제·정리 같은 작업은 **명시적으로 시켰을 때만** 실제로 실행됩니다.
+- 캡차나 "의심스러운 접속" 화면이 뜨면 자동으로 멈추고 알려줍니다. 잠시 쉬었다 다시 시도하세요.
