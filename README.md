@@ -12,7 +12,7 @@
 
 미리보기 👇 (재생이 안 되면 [여기서 다운로드](https://github.com/bobbypark-axz/AgentCafe/releases/download/v0.1.0/AgentCafe-demo.mp4))
 
-<video src="https://github.com/bobbypark-axz/AgentCafe/releases/download/v0.1.0/AgentCafe-demo.mp4" poster="docs/screenshot.png" controls width="100%"></video>
+<video src="https://raw.githubusercontent.com/bobbypark-axz/AgentCafe/main/docs/demo.mp4" poster="docs/screenshot.png" controls width="100%"></video>
 
 ---
 
