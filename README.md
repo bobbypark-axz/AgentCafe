@@ -10,9 +10,9 @@
 
 ## 🎬 데모 영상
 
-미리보기 👇 (재생이 안 되면 [여기서 다운로드](https://github.com/bobbypark-axz/AgentCafe/releases/download/v0.1.0/AgentCafe-demo.mp4))
+아래 이미지를 클릭하면 GitHub에서 영상이 재생됩니다 ▶
 
-<video src="https://raw.githubusercontent.com/bobbypark-axz/AgentCafe/main/docs/demo.mp4" poster="docs/screenshot.png" controls width="100%"></video>
+[![데모 영상 재생하기](docs/screenshot.png)](docs/demo.mp4)
 
 ---
 
